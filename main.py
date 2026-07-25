@@ -1,56 +1,22 @@
 import asyncio
+import requests
+import pandas as pd
+from ta.trend import EMAIndicator
+from ta.momentum import RSIIndicator
+from ta.trend import MACD
 from telegram import Bot
 from config import BOT_TOKEN, CHAT_ID
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(BOT_TOKEN)
 
-# استبدل هذا الجزء ببياناتك الفعلية
+API_KEY = "ضع_مفتاح_API_هنا"
+
 def get_analysis():
-    ema20 = 3348.20
-    ema50 = 3342.10
-    rsi = 58.4
-    macd = 1.25
-    signal = 0.98
+    url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=100&apikey={API_KEY}"
+    data = requests.get(url).json()
 
-    trend = "📈 الاتجاه العام: صاعد" if ema20 > ema50 else "📉 الاتجاه العام: هابط"
+    df = pd.DataFrame(data["values"])
+    df["close"] = df["close"].astype(float)
+    df = df.iloc[::-1]
 
-    if rsi > 70:
-        rsi_status = "تشبع شرائي"
-    elif rsi < 30:
-        rsi_status = "تشبع بيعي"
-    else:
-        rsi_status = "ضمن النطاق الطبيعي"
-
-    if macd > signal:
-        macd_status = "MACD أعلى من خط الإشارة"
-    else:
-        macd_status = "MACD أسفل خط الإشارة"
-
-    return f"""
-📊 تحليل الذهب (XAUUSD)
-
-{trend}
-
-EMA20: {ema20}
-EMA50: {ema50}
-
-RSI: {rsi:.1f}
-الحالة: {rsi_status}
-
-MACD: {macd}
-Signal: {signal}
-الحالة: {macd_status}
-
-⚠️ هذا تحليل معلوماتي فقط وليس توصية تداول.
-"""
-
-async def main():
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot Started")
-
-    while True:
-        msg = get_analysis()
-        await bot.send_message(chat_id=CHAT_ID, text=msg)
-        await asyncio.sleep(300)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    ema20 = EMAIndicator(df["close"], window=20).ema_indicator().
