@@ -1,34 +1,56 @@
 import asyncio
-import random
 from telegram import Bot
 from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-async def send_signal():
-    signal = random.choice(["BUY", "SELL"])
-    price = round(random.uniform(3300, 3400), 2)
+# استبدل هذا الجزء ببياناتك الفعلية
+def get_analysis():
+    ema20 = 3348.20
+    ema50 = 3342.10
+    rsi = 58.4
+    macd = 1.25
+    signal = 0.98
 
-    message = f"""
-📊 Gold Signal
+    trend = "📈 الاتجاه العام: صاعد" if ema20 > ema50 else "📉 الاتجاه العام: هابط"
 
-📈 Signal: {signal}
-💰 Symbol: XAUUSD
-📍 Entry: {price}
-🎯 TP: {price + 10 if signal == 'BUY' else price - 10}
-🛑 SL: {price - 5 if signal == 'BUY' else price + 5}
+    if rsi > 70:
+        rsi_status = "تشبع شرائي"
+    elif rsi < 30:
+        rsi_status = "تشبع بيعي"
+    else:
+        rsi_status = "ضمن النطاق الطبيعي"
 
-⚠️ Demo Signal
+    if macd > signal:
+        macd_status = "MACD أعلى من خط الإشارة"
+    else:
+        macd_status = "MACD أسفل خط الإشارة"
+
+    return f"""
+📊 تحليل الذهب (XAUUSD)
+
+{trend}
+
+EMA20: {ema20}
+EMA50: {ema50}
+
+RSI: {rsi:.1f}
+الحالة: {rsi_status}
+
+MACD: {macd}
+Signal: {signal}
+الحالة: {macd_status}
+
+⚠️ هذا تحليل معلوماتي فقط وليس توصية تداول.
 """
 
-    await bot.send_message(chat_id=CHAT_ID, text=message)
-
 async def main():
-    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot Started Successfully")
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Bot Started")
 
     while True:
-        await send_signal()
-        await asyncio.sleep(300)  # كل 5 دقائق
+        msg = get_analysis()
+        await bot.send_message(chat_id=CHAT_ID, text=msg)
+        await asyncio.sleep(300)
 
 if __name__ == "__main__":
     asyncio.run(main())
