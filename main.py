@@ -8,8 +8,14 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-def get_analysis():
-    df = yf.download("GC=F", period="2d", interval="5m", progress=False)
+df = yf.download(
+    "GC=F",
+    period="2d",
+    interval="5m",
+    progress=False,
+    auto_adjust=True,
+    multi_level_index=False
+)
 
     if df.empty:
         return "❌ فشل في جلب بيانات الذهب."
