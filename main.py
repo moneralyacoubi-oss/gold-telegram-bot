@@ -1,31 +1,68 @@
+import asyncio
+import yfinance as yf
+import pandas as pd
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator
+from telegram import Bot
+from config import BOT_TOKEN, CHAT_ID
+
+bot = Bot(token=BOT_TOKEN)
+
 def get_analysis():
-    url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&outputsize=100&apikey={API_KEY}"
+    df = yf.download("GC=F", period="2d", interval="5m", progress=False)
 
-    response = requests.get(url)
-    data = response.json()
+    if df.empty:
+        return "❌ فشل في جلب بيانات الذهب."
 
-    print(data)
+    close = df["Close"]
 
-    if "values" not in data:
-        raise Exception(data)
+    ema20 = EMAIndicator(close, window=20).ema_indicator().iloc[-1]
+    ema50 = EMAIndicator(close, window=50).ema_indicator().iloc[-1]
+    rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
 
-    df = pd.DataFrame(data["values"])
-    df["close"] = df["close"].astype(float)
-    df = df.iloc[::-1]
+    macd = MACD(close)
+    macd_value = macd.macd().iloc[-1]
+    signal_value = macd.macd_signal().iloc[-1]
 
-    ema20 = EMAIndicator(df["close"], window=20).ema_indicator().iloc[-1]
-    ema50 = EMAIndicator(df["close"], window=50).ema_indicator().iloc[-1]
-    rsi = RSIIndicator(df["close"], window=14).rsi().iloc[-1]
-    macd = MACD(df["close"]).macd().iloc[-1]
-    signal = MACD(df["close"]).macd_signal().iloc[-1]
-    price = df["close"].iloc[-1]
+    price = close.iloc[-1]
 
-    return f"""📊 Gold Analysis
+    if ema20 > ema50 and rsi < 70 and macd_value > signal_value:
+        signal = "🟢 BUY"
+    elif ema20 < ema50 and rsi > 30 and macd_value < signal_value:
+        signal = "🔴 SELL"
+    else:
+        signal = "🟡 WAIT"
+
+    return f"""
+📊 Gold Analysis
 
 💰 Price: {price:.2f}
+
 📈 EMA20: {ema20:.2f}
 📉 EMA50: {ema50:.2f}
+
 📊 RSI: {rsi:.2f}
-📉 MACD: {macd:.3f}
-📈 Signal: {signal:.3f}
+
+📈 MACD: {macd_value:.2f}
+📉 Signal: {signal_value:.2f}
+
+🔥 Recommendation:
+{signal}
+
+⚠️ للتحليل فقط وليس توصية استثمارية.
 """
+
+async def main():
+    await bot.send_message(chat_id=CHAT_ID, text="✅ Gold Analysis Bot Started")
+
+    while True:
+        try:
+            msg = get_analysis()
+            await bot.send_message(chat_id=CHAT_ID, text=msg)
+        except Exception as e:
+            await bot.send_message(chat_id=CHAT_ID, text=f"❌ Error:\n{e}")
+
+        await asyncio.sleep(300)
+
+if __name__ == "__main__":
+    asyncio.run(main())
