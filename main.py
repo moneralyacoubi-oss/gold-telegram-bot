@@ -44,4 +44,91 @@ def get_analysis():
     strength = 0
 
     if ema20 > ema50:
-        trend = "🟢 ص
+        trend = "🟢 صاعد"
+        strength += 40
+    else:
+        trend = "🔴 هابط"
+
+    if macd > macd_signal:
+        macd_text = "🟢 إيجابي"
+        strength += 30
+    else:
+        macd_text = "🔴 سلبي"
+
+    if rsi < 30:
+        rsi_text = "🟢 تشبع بيعي"
+        strength += 30
+    elif rsi > 70:
+        rsi_text = "🔴 تشبع شرائي"
+    else:
+        rsi_text = "🟡 طبيعي"
+        strength += 15
+
+    if strength >= 70:
+        signal = "🟢 BUY"
+    elif strength <= 30:
+        signal = "🔴 SELL"
+    else:
+        signal = "🟡 WAIT"
+
+    return f"""📊 GOLD ANALYSIS
+━━━━━━━━━━━━━━━━━━
+
+💰 السعر:
+{price:.2f}
+
+📈 الاتجاه:
+{trend}
+
+📊 RSI:
+{rsi:.2f} - {rsi_text}
+
+📉 MACD:
+{macd_text}
+
+🟢 الدعم:
+{support:.2f}
+
+🔴 المقاومة:
+{resistance:.2f}
+
+🎯 قوة الإشارة:
+{strength}%
+
+📌 القرار:
+{signal}
+
+🕒 الفريم:
+5 Minutes
+
+⏰ وقت التحليل:
+{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+━━━━━━━━━━━━━━━━━━
+⚠️ هذا تحليل آلي وليس توصية استثمارية.
+"""
+
+
+async def main():
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text="✅ Gold Analysis Bot Started"
+    )
+
+    while True:
+        try:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=get_analysis()
+            )
+        except Exception as e:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"❌ Error:\n{e}"
+            )
+
+        await asyncio.sleep(300)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
