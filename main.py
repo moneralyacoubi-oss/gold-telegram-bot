@@ -2,8 +2,6 @@ import asyncio
 from datetime import datetime
 import requests
 import pandas as pd
-from ta.trend import ADXIndicator
-from ta.volatility import AverageTrueRange
 from telegram import Bot
 
 from config import BOT_TOKEN, CHAT_ID, API_KEY
@@ -15,7 +13,7 @@ active_trade = None  # لمتابعة حالة الصفقة الحالية
 last_trade_time = datetime.now()  # تتبع وقت آخر صفقة مرسلة
 
 def fetch_data(timeframe, outputsize=100):
-    """جلب بيانات السعر"""
+    """جلب بيانات السعر من TwelveData"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
@@ -38,52 +36,41 @@ def fetch_data(timeframe, outputsize=100):
         return None
 
 def detect_smc_structure(df):
-    """تحليل هياكل الحركة الفنية SMC (BOS / ChoCh / FVG)"""
+    """تحليل SMC نقي (BOS / FVG / Ob Levels)"""
     highs = df["high"]
     lows = df["low"]
     closes = df["close"]
     opens = df["open"]
 
-    recent_high = highs.tail(10).iloc[:-1].max()
-    recent_low = lows.tail(10).iloc[:-1].min()
+    # تحديد القمم والقيعان السابقة (منعاً لإدراج الشمعة الحالية)
+    recent_high = highs.tail(15).iloc[:-1].max()
+    recent_low = lows.tail(15).iloc[:-1].min()
 
     last_close = closes.iloc[-1]
 
-    # Break of Structure (BOS)
+    # 1. كسر الهيكل (BOS) بإغلاق الشمعة
     bos_bullish = last_close > recent_high
     bos_bearish = last_close < recent_low
 
-    # Fair Value Gap (FVG)
-    fvg_bullish = lows.iloc[-1] > highs.iloc[-3]
-    fvg_bearish = highs.iloc[-1] < lows.iloc[-3]
+    # 2. الفجوة السعرية (FVG) النقية لآخر 3 شموع مكتملة
+    fvg_bullish = (lows.iloc[-1] > highs.iloc[-3]) and (closes.iloc[-2] > opens.iloc[-2])
+    fvg_bearish = (highs.iloc[-1] < lows.iloc[-3]) and (closes.iloc[-2] < opens.iloc[-2])
 
-    # Order Block (OB)
-    ob_bullish = None
-    ob_bearish = None
-
-    if bos_bullish:
-        for i in range(len(df) - 2, max(len(df) - 8, 0), -1):
-            if closes.iloc[i] < opens.iloc[i]:
-                ob_bullish = {"low": lows.iloc[i], "high": highs.iloc[i]}
-                break
-
-    if bos_bearish:
-        for i in range(len(df) - 2, max(len(df) - 8, 0), -1):
-            if closes.iloc[i] > opens.iloc[i]:
-                ob_bearish = {"low": lows.iloc[i], "high": highs.iloc[i]}
-                break
+    # 3. مستويات الستوب الهيكلي (أقل قاع / أعلى قمة في الحركة الأخيرة)
+    sl_buy = lows.tail(6).min()
+    sl_sell = highs.tail(6).max()
 
     return {
         "bos_bullish": bos_bullish,
         "bos_bearish": bos_bearish,
         "fvg_bullish": fvg_bullish,
         "fvg_bearish": fvg_bearish,
-        "ob_bullish": ob_bullish,
-        "ob_bearish": ob_bearish,
+        "sl_buy": sl_buy,
+        "sl_sell": sl_sell
     }
 
 def get_multi_tf_smc():
-    """تحليل اتجاه الفريمات المتوسطة لتأكيد الدعم"""
+    """تحديد اتجاه فريم M15 بناءً على SMC"""
     df_m15 = fetch_data("15min", 40)
     if df_m15 is None:
         return "NEUTRAL"
@@ -106,8 +93,6 @@ def check_signal():
         return None, None
 
     close = df_m1["close"]
-    high = df_m1["high"]
-    low = df_m1["low"]
     price = float(close.iloc[-1])
 
     # 1. متابعة حالة الصفقة الحالية (TP / SL)
@@ -123,12 +108,12 @@ def check_signal():
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp2:
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - Scalp)!**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - SMC)!**\n🪙 GOLD | السعر: {price:.2f}"
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1 - Scalp)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
+                msg = f"🎯 **تحقق الهدف الأول (TP1 - SMC)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
                 return "UPDATE", msg
 
         elif trade_type == "SELL":
@@ -137,48 +122,42 @@ def check_signal():
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp2:
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - Scalp)!**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - SMC)!**\n🪙 GOLD | السعر: {price:.2f}"
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1 - Scalp)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
+                msg = f"🎯 **تحقق الهدف الأول (TP1 - SMC)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
                 return "UPDATE", msg
 
         return None, None
 
-    # 2. تحليل SMC الفني على M1 و M5
+    # 2. تحليل SMC الفني الصافي
     smc_m1 = detect_smc_structure(df_m1)
     smc_m5 = detect_smc_structure(df_m5)
     tf_bias = get_multi_tf_smc()
 
-    adx = ADXIndicator(high, low, close, window=14).adx().iloc[-1]
-    atr = AverageTrueRange(high, low, close, window=14).average_true_range().iloc[-1]
+    trade = None
+    sl = 0
 
-    buy_score = 0
-    sell_score = 0
-
-    if adx > 15:
-        if smc_m1["bos_bullish"]: buy_score += 35
-        if smc_m1["bos_bearish"]: sell_score += 35
-
-        if smc_m5["bos_bullish"]: buy_score += 25
-        if smc_m5["bos_bearish"]: sell_score += 25
-
-        if smc_m1["fvg_bullish"] or smc_m5["fvg_bullish"]: buy_score += 20
-        if smc_m1["fvg_bearish"] or smc_m5["fvg_bearish"]: sell_score += 20
-
-        if tf_bias == "BULLISH": buy_score += 20
-        if tf_bias == "BEARISH": sell_score += 20
-
-    if buy_score >= 65:
+    # شروط الشراء SMC الصافية:
+    # كسر هيكل على M1 + (فجوة FVG أو كسر هيكل على M5) + الاتجاه العام صاعد على M15
+    if smc_m1["bos_bullish"] and (smc_m1["fvg_bullish"] or smc_m5["bos_bullish"]) and tf_bias == "BULLISH":
         trade = "BUY"
-        confidence = buy_score
-        ob = smc_m1["ob_bullish"] or smc_m5["ob_bullish"]
-    elif sell_score >= 65:
+        sl = smc_m1["sl_buy"] - 0.50  # ستوب أسفل قاع الهيكل بـ 50 سنت
+        risk = price - sl
+        if risk <= 0: return None, None
+        tp1 = price + (risk * 1.5)  # نسبة عائد 1:1.5
+        tp2 = price + (risk * 3.0)  # نسبة عائد 1:3.0
+
+    # شروط البيع SMC الصافية:
+    elif smc_m1["bos_bearish"] and (smc_m1["fvg_bearish"] or smc_m5["bos_bearish"]) and tf_bias == "BEARISH":
         trade = "SELL"
-        confidence = sell_score
-        ob = smc_m1["ob_bearish"] or smc_m5["ob_bearish"]
+        sl = smc_m1["sl_sell"] + 0.50  # ستوب أعلى قمة الهيكل بـ 50 سنت
+        risk = sl - price
+        if risk <= 0: return None, None
+        tp1 = price - (risk * 1.5)
+        tp2 = price - (risk * 3.0)
     else:
         return None, None
 
@@ -187,22 +166,9 @@ def check_signal():
         return None, None
 
     last_signal = current_signal
-    last_trade_time = datetime.now()  # تحديث توقيت آخر صفقة
+    last_trade_time = datetime.now()
 
-    # حساب الستوب والأهداف
-    if trade == "BUY":
-        entry = price
-        sl = entry - max(atr * 1.2, 1.5)
-        risk = entry - sl
-        tp1 = entry + (risk * 1.2)
-        tp2 = entry + (risk * 2.5)
-    else:
-        entry = price
-        sl = entry + max(atr * 1.2, 1.5)
-        risk = sl - entry
-        tp1 = entry - (risk * 1.2)
-        tp2 = entry - (risk * 2.5)
-
+    entry = price
     active_trade = {
         "type": trade,
         "entry": entry,
@@ -214,22 +180,21 @@ def check_signal():
 
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
 
-    message = f"""⚡ **إشارة سكالبينج سريعة (V3 SMC Fast)** ⚡
+    message = f"""⚡ **إشارة SMC احترافية تتبع صُنّاع السوق** ⚡
 
 📌 **القرار:** {signal_emoji} {trade}
 🪙 **الأداة:** GOLD (XAU/USD)
-🕒 **الإطار الزمني:** M1 / M5 Fast
+🕒 **الإطار الزمني:** M1 / M5 / M15
 
 💵 **سعر الدخول:** {entry:.2f}
-🎯 **هدف أول (TP1):** {tp1:.2f}
-🎯 **هدف ثاني (TP2):** {tp2:.2f}
-🛡️ **إيقاف الخسارة (SL):** {sl:.2f}
+🎯 **هدف أول (TP1):** {tp1:.2f} (1:1.5)
+🎯 **هدف ثاني (TP2):** {tp2:.2f} (1:3.0)
+🛡️ **إيقاف الخسارة (SL):** {sl:.2f} (هيكلي)
 
-🏛️ **عناصر الإشارة:**
-• **كسر هيكل (M1/M5 BOS):** متحقق ✅
-• **فجوة FVG:** متوفرة ⚡
-• **مؤشر الترند (ADX):** {adx:.1f}
-🔥 **قوة الإشارة:** {confidence}%
+🏛️ **تأكيدات SMC:**
+• **الاتجاه العام (M15 Bias):** {tf_bias} ✅
+• **كسر هيكل (BOS):** متحقق ✅
+• **الفجوة السعرية (FVG):** متوفرة ⚡
 
 ⏰ **الوقت:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """
@@ -241,7 +206,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت V3 SMC Fast (توليد صفقات مكثفة + تقارير كل ساعة) بنجاح!"
+            text="⚡ تم تشغيل البوت بنظام SMC الصافي 100% بنجاح!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -258,13 +223,12 @@ async def main():
                     parse_mode="Markdown"
                 )
 
-            # التقرير الدوري: فحص إذا مرت ساعة كاملة بدون إرسال صفقات
             now = datetime.now()
             time_since_last_report = (now - last_hourly_report).total_seconds()
             time_since_last_trade = (now - last_trade_time).total_seconds()
 
-            if time_since_last_report >= 3600:  # كل 3600 ثانية (ساعة)
-                if time_since_last_trade >= 3600:  # إذا لم تكن هناك صفقة خلال الساعة الأخيرة
+            if time_since_last_report >= 3600:
+                if time_since_last_trade >= 3600:
                     report_msg = "بعد ما منير حلل السوك طلع ماكو صفقات حالياً 📊"
                     await bot.send_message(
                         chat_id=CHAT_ID,
@@ -275,7 +239,6 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # فحص كسر الهيكل كل 30 ثانية
         await asyncio.sleep(30)
 
 if __name__ == "__main__":
