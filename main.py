@@ -12,6 +12,7 @@ bot = Bot(token=BOT_TOKEN)
 
 last_signal = None
 active_trade = None  # لمتابعة حالة الصفقة الحالية
+last_trade_time = datetime.now()  # تتبع وقت آخر صفقة مرسلة
 
 def fetch_data(timeframe, outputsize=100):
     """جلب بيانات السعر"""
@@ -43,7 +44,6 @@ def detect_smc_structure(df):
     closes = df["close"]
     opens = df["open"]
 
-    # تقليل عدد الشموع المراقبة لسرعة التقاط الكسر (Scalping Fast)
     recent_high = highs.tail(10).iloc[:-1].max()
     recent_low = lows.tail(10).iloc[:-1].min()
 
@@ -53,7 +53,7 @@ def detect_smc_structure(df):
     bos_bullish = last_close > recent_high
     bos_bearish = last_close < recent_low
 
-    # Fair Value Gap (FVG) في آخر 3 شمعات
+    # Fair Value Gap (FVG)
     fvg_bullish = lows.iloc[-1] > highs.iloc[-3]
     fvg_bearish = highs.iloc[-1] < lows.iloc[-3]
 
@@ -97,9 +97,8 @@ def get_multi_tf_smc():
     return "NEUTRAL"
 
 def check_signal():
-    global last_signal, active_trade
+    global last_signal, active_trade, last_trade_time
 
-    # استخدام فريم M1 + M5 للحصول على صفقات سريعة وكثيرة
     df_m1 = fetch_data("1min", 80)
     df_m5 = fetch_data("5min", 80)
 
@@ -159,8 +158,7 @@ def check_signal():
     buy_score = 0
     sell_score = 0
 
-    # تقييم الشروط بنظام النقاط المرن (مرونة عالية لزيادة الصفقات)
-    if adx > 15:  # شرط خفيف جداً يضمن وجود حركة
+    if adx > 15:
         if smc_m1["bos_bullish"]: buy_score += 35
         if smc_m1["bos_bearish"]: sell_score += 35
 
@@ -173,7 +171,6 @@ def check_signal():
         if tf_bias == "BULLISH": buy_score += 20
         if tf_bias == "BEARISH": sell_score += 20
 
-    # قبول الصفقة عند نسبة 65% فأكثر (صفقات كثيرة وسريعة)
     if buy_score >= 65:
         trade = "BUY"
         confidence = buy_score
@@ -190,11 +187,12 @@ def check_signal():
         return None, None
 
     last_signal = current_signal
+    last_trade_time = datetime.now()  # تحديث توقيت آخر صفقة
 
-    # حساب الستوب والاهداف المخصصة للسكالبينج السريع
+    # حساب الستوب والأهداف
     if trade == "BUY":
         entry = price
-        sl = entry - max(atr * 1.2, 1.5)  # ستوب مناسب لحجم الحركة
+        sl = entry - max(atr * 1.2, 1.5)
         risk = entry - sl
         tp1 = entry + (risk * 1.2)
         tp2 = entry + (risk * 2.5)
@@ -205,7 +203,6 @@ def check_signal():
         tp1 = entry - (risk * 1.2)
         tp2 = entry - (risk * 2.5)
 
-    # تسجيل الصفقة للمتابعة
     active_trade = {
         "type": trade,
         "entry": entry,
@@ -239,13 +236,17 @@ def check_signal():
     return "NEW_TRADE", message
 
 async def main():
+    global last_trade_time
+
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت V3 SMC Fast (توليد صفقات مكثفة + M1/M5 Scalping) بنجاح!"
+            text="⚡ تم تشغيل البوت V3 SMC Fast (توليد صفقات مكثفة + تقارير كل ساعة) بنجاح!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
+
+    last_hourly_report = datetime.now()
 
     while True:
         try:
@@ -257,10 +258,24 @@ async def main():
                     parse_mode="Markdown"
                 )
 
+            # التقرير الدوري: فحص إذا مرت ساعة كاملة بدون إرسال صفقات
+            now = datetime.now()
+            time_since_last_report = (now - last_hourly_report).total_seconds()
+            time_since_last_trade = (now - last_trade_time).total_seconds()
+
+            if time_since_last_report >= 3600:  # كل 3600 ثانية (ساعة)
+                if time_since_last_trade >= 3600:  # إذا لم تكن هناك صفقة خلال الساعة الأخيرة
+                    report_msg = "بعد ما منير حلل السوك طلع ماكو صفقات حالياً 📊"
+                    await bot.send_message(
+                        chat_id=CHAT_ID,
+                        text=report_msg
+                    )
+                last_hourly_report = now
+
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # فحص كسر الهيكل كل 30 ثانية لعدم تفويت الصفقات السريعة
+        # فحص كسر الهيكل كل 30 ثانية
         await asyncio.sleep(30)
 
 if __name__ == "__main__":
