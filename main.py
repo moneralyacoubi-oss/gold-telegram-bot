@@ -2,8 +2,7 @@ import asyncio
 from datetime import datetime
 import requests
 import pandas as pd
-from ta.trend import EMAIndicator, MACD, ADXIndicator
-from ta.momentum import RSIIndicator
+from ta.trend import ADXIndicator
 from ta.volatility import AverageTrueRange
 from telegram import Bot
 
@@ -12,10 +11,10 @@ from config import BOT_TOKEN, CHAT_ID, API_KEY
 bot = Bot(token=BOT_TOKEN)
 
 last_signal = None
-active_trade = None  # لمتابعة حالة الصفقة الحالية (TP1, TP2, SL)
+active_trade = None  # لمتابعة حالة الصفقة الحالية
 
 def fetch_data(timeframe, outputsize=100):
-    """جلب البيانات الفنية لأي إطار زمني"""
+    """جلب بيانات السعر"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
@@ -29,6 +28,7 @@ def fetch_data(timeframe, outputsize=100):
             return None
         df = pd.DataFrame(res["values"]).iloc[::-1]
         df["close"] = df["close"].astype(float)
+        df["open"] = df["open"].astype(float)
         df["high"] = df["high"].astype(float)
         df["low"] = df["low"].astype(float)
         return df
@@ -36,41 +36,82 @@ def fetch_data(timeframe, outputsize=100):
         print(f"Error fetching {timeframe}: {e}")
         return None
 
-def get_multi_tf_bias():
-    """فلتر الاتجاه العام على M15 و H1"""
-    df_m15 = fetch_data("15min", 50)
-    df_h1 = fetch_data("1h", 50)
+def detect_smc_structure(df):
+    """تحليل هياكل الحركة الفنية SMC (BOS / ChoCh / FVG)"""
+    highs = df["high"]
+    lows = df["low"]
+    closes = df["close"]
+    opens = df["open"]
 
-    if df_m15 is None or df_h1 is None:
+    # تقليل عدد الشموع المراقبة لسرعة التقاط الكسر (Scalping Fast)
+    recent_high = highs.tail(10).iloc[:-1].max()
+    recent_low = lows.tail(10).iloc[:-1].min()
+
+    last_close = closes.iloc[-1]
+
+    # Break of Structure (BOS)
+    bos_bullish = last_close > recent_high
+    bos_bearish = last_close < recent_low
+
+    # Fair Value Gap (FVG) في آخر 3 شمعات
+    fvg_bullish = lows.iloc[-1] > highs.iloc[-3]
+    fvg_bearish = highs.iloc[-1] < lows.iloc[-3]
+
+    # Order Block (OB)
+    ob_bullish = None
+    ob_bearish = None
+
+    if bos_bullish:
+        for i in range(len(df) - 2, max(len(df) - 8, 0), -1):
+            if closes.iloc[i] < opens.iloc[i]:
+                ob_bullish = {"low": lows.iloc[i], "high": highs.iloc[i]}
+                break
+
+    if bos_bearish:
+        for i in range(len(df) - 2, max(len(df) - 8, 0), -1):
+            if closes.iloc[i] > opens.iloc[i]:
+                ob_bearish = {"low": lows.iloc[i], "high": highs.iloc[i]}
+                break
+
+    return {
+        "bos_bullish": bos_bullish,
+        "bos_bearish": bos_bearish,
+        "fvg_bullish": fvg_bullish,
+        "fvg_bearish": fvg_bearish,
+        "ob_bullish": ob_bullish,
+        "ob_bearish": ob_bearish,
+    }
+
+def get_multi_tf_smc():
+    """تحليل اتجاه الفريمات المتوسطة لتأكيد الدعم"""
+    df_m15 = fetch_data("15min", 40)
+    if df_m15 is None:
         return "NEUTRAL"
 
-    ema20_m15 = EMAIndicator(df_m15["close"], window=20).ema_indicator().iloc[-1]
-    ema50_m15 = EMAIndicator(df_m15["close"], window=50).ema_indicator().iloc[-1]
-
-    ema20_h1 = EMAIndicator(df_h1["close"], window=20).ema_indicator().iloc[-1]
-    ema50_h1 = EMAIndicator(df_h1["close"], window=50).ema_indicator().iloc[-1]
-
-    if ema20_m15 > ema50_m15 and ema20_h1 > ema50_h1:
+    smc_m15 = detect_smc_structure(df_m15)
+    if smc_m15["bos_bullish"]:
         return "BULLISH"
-    elif ema20_m15 < ema50_m15 and ema20_h1 < ema50_h1:
+    elif smc_m15["bos_bearish"]:
         return "BEARISH"
-    
+
     return "NEUTRAL"
 
 def check_signal():
     global last_signal, active_trade
 
-    df_m5 = fetch_data("5min", 100)
-    if df_m5 is None:
+    # استخدام فريم M1 + M5 للحصول على صفقات سريعة وكثيرة
+    df_m1 = fetch_data("1min", 80)
+    df_m5 = fetch_data("5min", 80)
+
+    if df_m1 is None or df_m5 is None:
         return None, None
 
-    close = df_m5["close"]
-    high = df_m5["high"]
-    low = df_m5["low"]
-
+    close = df_m1["close"]
+    high = df_m1["high"]
+    low = df_m1["low"]
     price = float(close.iloc[-1])
 
-    # 1. متابعة الصفقة الحالية المفتوحة (TP1, TP2, SL)
+    # 1. متابعة حالة الصفقة الحالية (TP / SL)
     if active_trade:
         trade_type = active_trade["type"]
         tp1 = active_trade["tp1"]
@@ -83,12 +124,12 @@ def check_signal():
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp2:
-                msg = f"🎯🎯 **تحقق الهدف الثاني بالكامل (TP2)!**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - Scalp)!**\n🪙 GOLD | السعر: {price:.2f}"
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1)!**\n🪙 GOLD | يُنصح بنقل إيقاف الخسارة لنقطة الدخول ({active_trade['entry']:.2f})."
+                msg = f"🎯 **تحقق الهدف الأول (TP1 - Scalp)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
                 return "UPDATE", msg
 
         elif trade_type == "SELL":
@@ -97,66 +138,50 @@ def check_signal():
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp2:
-                msg = f"🎯🎯 **تحقق الهدف الثاني بالكامل (TP2)!**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - Scalp)!**\n🪙 GOLD | السعر: {price:.2f}"
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1)!**\n🪙 GOLD | يُنصح بنقل إيقاف الخسارة لنقطة الدخول ({active_trade['entry']:.2f})."
+                msg = f"🎯 **تحقق الهدف الأول (TP1 - Scalp)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
                 return "UPDATE", msg
 
-        return None, None  # لا توجد إشارة جديدة طالما الصفقة مستمرة ولم تحقق هدف أو ستوب
+        return None, None
 
-    # 2. حساب المؤشرات للفرص الجديدة (M5)
-    ema20 = EMAIndicator(close, window=20).ema_indicator().iloc[-1]
-    ema50 = EMAIndicator(close, window=50).ema_indicator().iloc[-1]
-    rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
-    
-    macd_obj = MACD(close)
-    macd = macd_obj.macd().iloc[-1]
-    signal = macd_obj.macd_signal().iloc[-1]
+    # 2. تحليل SMC الفني على M1 و M5
+    smc_m1 = detect_smc_structure(df_m1)
+    smc_m5 = detect_smc_structure(df_m5)
+    tf_bias = get_multi_tf_smc()
 
     adx = ADXIndicator(high, low, close, window=14).adx().iloc[-1]
     atr = AverageTrueRange(high, low, close, window=14).average_true_range().iloc[-1]
 
-    # حساب الكسر/الاختراق (Breakout) لأخر 20 شمعة
-    recent_high = float(high.tail(20).iloc[:-1].max())
-    recent_low = float(low.tail(20).iloc[:-1].min())
-
-    is_breakout_buy = price > recent_high
-    is_breakout_sell = price < recent_low
-
-    # الاتجاه من الفريمات الكبيرة
-    tf_bias = get_multi_tf_bias()
-
-    # تقييم الإشارة (نظام نقاط صارم V2)
     buy_score = 0
     sell_score = 0
 
-    # شرط قوة الاتجاه (ADX يجب أن يكون > 20 لضمان وجود ترند حقيقي)
-    if adx > 20:
-        if tf_bias == "BULLISH": buy_score += 30
-        if tf_bias == "BEARISH": sell_score += 30
+    # تقييم الشروط بنظام النقاط المرن (مرونة عالية لزيادة الصفقات)
+    if adx > 15:  # شرط خفيف جداً يضمن وجود حركة
+        if smc_m1["bos_bullish"]: buy_score += 35
+        if smc_m1["bos_bearish"]: sell_score += 35
 
-        if ema20 > ema50: buy_score += 20
-        else: sell_score += 20
+        if smc_m5["bos_bullish"]: buy_score += 25
+        if smc_m5["bos_bearish"]: sell_score += 25
 
-        if macd > signal: buy_score += 20
-        else: sell_score += 20
+        if smc_m1["fvg_bullish"] or smc_m5["fvg_bullish"]: buy_score += 20
+        if smc_m1["fvg_bearish"] or smc_m5["fvg_bearish"]: sell_score += 20
 
-        if rsi > 50 and rsi < 70: buy_score += 15
-        elif rsi < 50 and rsi > 30: sell_score += 15
+        if tf_bias == "BULLISH": buy_score += 20
+        if tf_bias == "BEARISH": sell_score += 20
 
-        if is_breakout_buy: buy_score += 15
-        if is_breakout_sell: sell_score += 15
-
-    # اتخاذ القرار (يتطلب 85% على الأقل لدخول صفقة عالية الدقة)
-    if buy_score >= 85 and tf_bias == "BULLISH":
+    # قبول الصفقة عند نسبة 65% فأكثر (صفقات كثيرة وسريعة)
+    if buy_score >= 65:
         trade = "BUY"
         confidence = buy_score
-    elif sell_score >= 85 and tf_bias == "BEARISH":
+        ob = smc_m1["ob_bullish"] or smc_m5["ob_bullish"]
+    elif sell_score >= 65:
         trade = "SELL"
         confidence = sell_score
+        ob = smc_m1["ob_bearish"] or smc_m5["ob_bearish"]
     else:
         return None, None
 
@@ -166,19 +191,21 @@ def check_signal():
 
     last_signal = current_signal
 
-    # حساب الأهداف بناءً على ATR الحقيقي للتأقلم مع تذبذب الذهب
+    # حساب الستوب والاهداف المخصصة للسكالبينج السريع
     if trade == "BUY":
         entry = price
-        sl = entry - (atr * 1.8)
-        tp1 = entry + (atr * 1.5)
-        tp2 = entry + (atr * 3.0)
+        sl = entry - max(atr * 1.2, 1.5)  # ستوب مناسب لحجم الحركة
+        risk = entry - sl
+        tp1 = entry + (risk * 1.2)
+        tp2 = entry + (risk * 2.5)
     else:
         entry = price
-        sl = entry + (atr * 1.8)
-        tp1 = entry - (atr * 1.5)
-        tp2 = entry - (atr * 3.0)
+        sl = entry + max(atr * 1.2, 1.5)
+        risk = sl - entry
+        tp1 = entry - (risk * 1.2)
+        tp2 = entry - (risk * 2.5)
 
-    # تسجيل الصفقة الحالية للمتابعة
+    # تسجيل الصفقة للمتابعة
     active_trade = {
         "type": trade,
         "entry": entry,
@@ -190,23 +217,22 @@ def check_signal():
 
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
 
-    message = f"""🚀 **إشارة صفقة جديدة (V2 Pro)** 🚀
+    message = f"""⚡ **إشارة سكالبينج سريعة (V3 SMC Fast)** ⚡
 
 📌 **القرار:** {signal_emoji} {trade}
 🪙 **الأداة:** GOLD (XAU/USD)
-🕒 **الاطار الزمني:** M5 (مدعوم بـ M15 & H1)
+🕒 **الإطار الزمني:** M1 / M5 Fast
 
 💵 **سعر الدخول:** {entry:.2f}
 🎯 **هدف أول (TP1):** {tp1:.2f}
 🎯 **هدف ثاني (TP2):** {tp2:.2f}
 🛡️ **إيقاف الخسارة (SL):** {sl:.2f}
 
-📊 **مؤشرات V2 المعززة:**
-• **اتجاه (M15 & H1):** {tf_bias} ⚡
-• **قوة الاتجاه (ADX):** {adx:.1f} {"(ترند قوي)" if adx > 25 else "(مقبول)"}
-• **تذبذب السوق (ATR):** {atr:.2f}
-• **اختراق السعر (Breakout):** {"نعم 🔥" if (is_breakout_buy or is_breakout_sell) else "لا"}
-🔥 **قوة الإشارة الإجمالية:** {confidence}%
+🏛️ **عناصر الإشارة:**
+• **كسر هيكل (M1/M5 BOS):** متحقق ✅
+• **فجوة FVG:** متوفرة ⚡
+• **مؤشر الترند (ADX):** {adx:.1f}
+🔥 **قوة الإشارة:** {confidence}%
 
 ⏰ **الوقت:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """
@@ -216,7 +242,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="🚀 تم تشغيل البوت V2 المطور (ATR + ADX + M15/H1 Filter) بنجاح!"
+            text="⚡ تم تشغيل البوت V3 SMC Fast (توليد صفقات مكثفة + M1/M5 Scalping) بنجاح!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -234,8 +260,8 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # التحديث كل دقيقة لمتابعة الأهداف والستوب بسرعة
-        await asyncio.sleep(60)
+        # فحص كسر الهيكل كل 30 ثانية لعدم تفويت الصفقات السريعة
+        await asyncio.sleep(30)
 
 if __name__ == "__main__":
     asyncio.run(main())
