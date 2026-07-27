@@ -1,169 +1,249 @@
 import asyncio
+import logging
 from datetime import datetime
-import requests
+
 import pandas as pd
-from ta.trend import EMAIndicator, MACD
+import requests
+
+from ta.trend import EMAIndicator, MACD, ADXIndicator
 from ta.momentum import RSIIndicator
+from ta.volatility import AverageTrueRange
+
 from telegram import Bot
 
 from config import BOT_TOKEN, CHAT_ID, API_KEY
 
+# ==========================
+# BOT SETTINGS
+# ==========================
+
 bot = Bot(token=BOT_TOKEN)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+SYMBOL = "XAU/USD"
+
+ENTRY_TIMEFRAME = "5min"
+CONFIRM_TIMEFRAME = "15min"
+TREND_TIMEFRAME = "1h"
+
+OUTPUT_SIZE = 200
+
+MIN_CONFIDENCE = 85
+
 last_signal = None
+active_trade = None
+
+BASE_URL = "https://api.twelvedata.com/time_series"
 
 
-def get_analysis():
+# ==========================
+# DOWNLOAD DATA
+# ==========================
+
+def get_candles(interval):
+
+    url = (
+        f"{BASE_URL}"
+        f"?symbol={SYMBOL}"
+        f"&interval={interval}"
+        f"&outputsize={OUTPUT_SIZE}"
+        f"&apikey={API_KEY}"
+    )
+
+    data = requests.get(url, timeout=15).json()
+
+    if "values" not in data:
+        logging.error(data)
+        return None
+
+    df = pd.DataFrame(data["values"])
+
+    df = df.iloc[::-1].reset_index(drop=True)
+
+    for col in ["open", "high", "low", "close"]:
+        df[col] = df[col].astype(float)
+
+    return df
+# ==========================
+# INDICATORS
+# ==========================
+
+def calculate_indicators(df):
+
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+
+    # EMA
+    df["ema50"] = EMAIndicator(close, window=50).ema_indicator()
+    df["ema200"] = EMAIndicator(close, window=200).ema_indicator()
+
+    # RSI
+    df["rsi"] = RSIIndicator(close, window=14).rsi()
+
+    # MACD
+    macd = MACD(close)
+
+    df["macd"] = macd.macd()
+    df["macd_signal"] = macd.macd_signal()
+    df["macd_hist"] = macd.macd_diff()
+
+    # ATR
+    atr = AverageTrueRange(
+        high=high,
+        low=low,
+        close=close,
+        window=14
+    )
+
+    df["atr"] = atr.average_true_range()
+
+    # ADX
+    adx = ADXIndicator(
+        high=high,
+        low=low,
+        close=close,
+        window=14
+    )
+
+    df["adx"] = adx.adx()
+
+    return df
+
+
+# ==========================
+# SUPPORT & RESISTANCE
+# ==========================
+
+def get_support_resistance(df):
+
+    support = df["low"].tail(30).min()
+
+    resistance = df["high"].tail(30).max()
+
+    return support, resistance
+
+
+# ==========================
+# TREND
+# ==========================
+
+def get_trend(df):
+
+    last = df.iloc[-1]
+
+    if last["ema50"] > last["ema200"]:
+        return "BUY"
+
+    elif last["ema50"] < last["ema200"]:
+        return "SELL"
+
+    return "NONE"
+# ==========================
+# MARKET ANALYSIS
+# ==========================
+
+def analyze_market():
+
+    m5 = calculate_indicators(get_candles(ENTRY_TIMEFRAME))
+    m15 = calculate_indicators(get_candles(CONFIRM_TIMEFRAME))
+    h1 = calculate_indicators(get_candles(TREND_TIMEFRAME))
+
+    if m5 is None or m15 is None or h1 is None:
+        return None
+
+    trend_h1 = get_trend(h1)
+    trend_m15 = get_trend(m15)
+    trend_m5 = get_trend(m5)
+
+    # لازم كل الفريمات بنفس الاتجاه
+    if trend_h1 != trend_m15 or trend_h1 != trend_m5:
+        return None
+
+    last = m5.iloc[-1]
+
+    confidence = 
+# ==========================
+# SEND TELEGRAM SIGNAL
+# ==========================
+
+async def send_signal(signal):
+
     global last_signal
 
-    try:
-        url = (
-            f"https://api.twelvedata.com/time_series"
-            f"?symbol=XAU/USD"
-            f"&interval=5min"
-            f"&outputsize=100"
-            f"&apikey={API_KEY}"
-        )
+    signal_id = f"{signal['signal']}_{round(signal['entry'],2)}"
 
-        data = requests.get(url, timeout=10).json()
+    if signal_id == last_signal:
+        return
 
-        if "values" not in data:
-            return None
+    last_signal = signal_id
 
-        df = pd.DataFrame(data["values"])
-        df = df.iloc[::-1]
+    message = f"""
+🚨 XAU/USD INTRADAY SIGNAL
 
-        df["close"] = df["close"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
+{'🟢 BUY' if signal['signal']=='BUY' else '🔴 SELL'}
 
-        close = df["close"]
-        high = df["high"]
-        low = df["low"]
+💰 Entry:
+{signal['entry']:.2f}
 
-        ema20 = EMAIndicator(close, window=20).ema_indicator().iloc[-1]
-        ema50 = EMAIndicator(close, window=50).ema_indicator().iloc[-1]
+🛑 Stop Loss:
+{signal['sl']:.2f}
 
-        rsi = RSIIndicator(close, window=14).rsi().iloc[-1]
+🎯 TP1:
+{signal['tp1']:.2f}
 
-        macd_obj = MACD(close)
+🎯 TP2:
+{signal['tp2']:.2f}
 
-        macd = macd_obj.macd().iloc[-1]
-        signal = macd_obj.macd_signal().iloc[-1]
+🎯 TP3:
+{signal['tp3']:.2f}
 
-        price = float(close.iloc[-1])
+🔥 Confidence:
+{signal['confidence']}%
 
-        support = float(low.tail(20).min())
-        resistance = float(high.tail(20).max())
+📊 Strategy:
+EMA50 + EMA200
+MACD
+RSI
+ATR
+ADX
 
-        buy_score = 0
-        sell_score = 0
-
-        if ema20 > ema50:
-            buy_score += 40
-        else:
-            sell_score += 40
-
-        if macd > signal:
-            buy_score += 35
-        else:
-            sell_score += 35
-
-        if rsi < 35:
-            buy_score += 25
-        elif rsi > 65:
-            sell_score += 25
-        else:
-            buy_score += 10
-            sell_score += 10
-                    # اتخاذ القرار
-        if buy_score >= 80:
-            trade = "BUY"
-            confidence = buy_score
-        elif sell_score >= 80:
-            trade = "SELL"
-            confidence = sell_score
-        else:
-            return None
-
-        # منع تكرار نفس الإشارة
-        current_signal = f"{trade}_{round(price, 2)}"
-
-        if current_signal == last_signal:
-            return None
-
-        last_signal = current_signal
-
-        # حساب مستويات الصفقة
-        if trade == "BUY":
-            entry = price
-            stop_loss = support
-
-            risk = entry - stop_loss
-            if risk <= 0:
-                risk = price * 0.002
-
-            tp1 = entry + risk
-            tp2 = entry + (risk * 2)
-
-        else:
-            entry = price
-            stop_loss = resistance
-
-            risk = stop_loss - entry
-            if risk <= 0:
-                risk = price * 0.002
-
-            tp1 = entry - risk
-            tp2 = entry - (risk * 2)
-
-        return f"""
-🚨 GOLD SIGNAL 🚨
-
-📌 Signal : {trade}
-
-💰 Entry : {entry:.2f}
-
-🎯 TP1 : {tp1:.2f}
-🎯 TP2 : {tp2:.2f}
-
-🛑 Stop Loss : {stop_loss:.2f}
-
-🔥 Confidence : {confidence}%
-
-🕒 TimeFrame : M5
-
-⏰ {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+🕒 {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 """
 
-    except Exception as e:
-        print(e)
-        return None
-        async def main():
-    # رسالة بدء التشغيل
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text="✅ Gold Signal Bot Started Successfully"
-        )
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text=message
+    )
+# ==========================
+# MAIN LOOP
+# ==========================
+
+async def main():
+
+    logging.info("Gold Bot Started...")
+
+    await bot.send_message(
+        chat_id=CHAT_ID,
+        text="✅ Gold Intraday Bot Started Successfully"
+    )
 
     while True:
-        try:
-            analysis = get_analysis()
 
-            # يرسل فقط إذا توجد إشارة قوية
-            if analysis:
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text=analysis
-                )
+        try:
+
+            signal = analyze_market()
+
+            if signal:
+                await send_signal(signal)
 
         except Exception as e:
-            print(f"Error: {e}")
+            logging.error(e)
 
-        # تحديث كل 5 دقائق
         await asyncio.sleep(300)
 
 
