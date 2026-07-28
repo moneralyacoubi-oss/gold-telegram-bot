@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, time
 import requests
 import pandas as pd
 from telegram import Bot
@@ -11,6 +11,53 @@ bot = Bot(token=BOT_TOKEN)
 last_signal = None
 active_trade = None  # لمتابعة حالة الصفقة الحالية
 last_trade_time = datetime.now()  # تتبع وقت آخر صفقة مرسلة
+
+# متغيرات التقرير اليومي
+daily_stats = {
+    "total_trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "total_pips": 0.0,
+    "last_reset_date": datetime.now().date()
+}
+
+def is_news_time():
+    """
+    التحقق من وجود أخبار عالية التأثير على الدولار الأمريكي (High Impact USD News)
+    يتم تجميد التداول قبل وبعد الخبر بـ 15 دقيقة
+    """
+    try:
+        url = "https://nws.forexfactory1.com/forex_calendar.json" # مصدر خفيف وجاهز للأخبار
+        res = requests.get(url, timeout=5).json()
+        now = datetime.now()
+        
+        for event in res:
+            if event.get("country") == "USD" and event.get("impact") == "High":
+                # تحويل وقت الخبر إلى datetime
+                event_time_str = f"{event.get('date')} {event.get('time')}"
+                event_dt = datetime.strptime(event_time_str, "%Y-%m-%d %I:%M%p")
+                
+                # حساب الفارق بالدقائق
+                diff_minutes = abs((now - event_dt).total_seconds()) / 60.0
+                if diff_minutes <= 15:
+                    return True, event.get("title")
+    except Exception:
+        # في حال حدوث خطأ في شبكة الأخبار، يكمل البوت عمله الطبيعي
+        pass
+    return False, None
+
+def reset_daily_stats_if_needed():
+    """إعادة إحصائيات اليوم عند تغيير التاريخ"""
+    global daily_stats
+    today = datetime.now().date()
+    if daily_stats["last_reset_date"] != today:
+        daily_stats = {
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pips": 0.0,
+            "last_reset_date": today
+        }
 
 def fetch_data(timeframe, outputsize=100):
     """جلب بيانات السعر من TwelveData"""
@@ -42,7 +89,6 @@ def detect_smc_structure(df):
     closes = df["close"]
     opens = df["open"]
 
-    # تحديد القمم والقيعان السابقة
     recent_high = highs.tail(15).iloc[:-1].max()
     recent_low = lows.tail(15).iloc[:-1].min()
 
@@ -84,7 +130,9 @@ def get_multi_tf_smc():
     return "NEUTRAL"
 
 def check_signal():
-    global last_signal, active_trade, last_trade_time
+    global last_signal, active_trade, last_trade_time, daily_stats
+
+    reset_daily_stats_if_needed()
 
     df_m1 = fetch_data("1min", 80)
     df_m5 = fetch_data("5min", 80)
@@ -98,41 +146,68 @@ def check_signal():
     # 1. متابعة حالة الصفقة الحالية (TP / SL)
     if active_trade:
         trade_type = active_trade["type"]
+        entry = active_trade["entry"]
         tp1 = active_trade["tp1"]
         tp2 = active_trade["tp2"]
         sl = active_trade["sl"]
 
         if trade_type == "BUY":
             if price <= sl:
-                msg = f"❌ **ضربت إيقاف الخسارة (SL)**\n🪙 GOLD | السعر: `{price:.2f}`"
+                pips_lost = round((sl - entry) * 10, 1)
+                daily_stats["losses"] += 1
+                daily_stats["total_pips"] += pips_lost
+                msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp2:
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`"
+                pips_gained = round((tp2 - entry) * 10, 1)
+                daily_stats["wins"] += 1
+                daily_stats["total_pips"] += pips_gained
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`\n📈 الأرباح الكاملة: `{pips_gained}` Pip"
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1)!**\n🪙 GOLD | نقل الستوب لنقطة الدخول (`{active_trade['entry']:.2f}`)."
+                pips_gained = round((tp1 - entry) * 10, 1)
+                msg = (
+                    f"🎯 **تحقق الهدف الأول (TP1)!** (+{pips_gained} Pip)\n"
+                    f"💰 **توصية:** إغلاق 50% من العقود ونقل الستوب لنقطة الدخول (`{entry:.2f}`)."
+                )
                 return "UPDATE", msg
 
         elif trade_type == "SELL":
             if price >= sl:
-                msg = f"❌ **ضربت إيقاف الخسارة (SL)**\n🪙 GOLD | السعر: `{price:.2f}`"
+                pips_lost = round((entry - sl) * 10, 1)
+                daily_stats["losses"] += 1
+                daily_stats["total_pips"] += pips_lost
+                msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp2:
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`"
+                pips_gained = round((entry - tp2) * 10, 1)
+                daily_stats["wins"] += 1
+                daily_stats["total_pips"] += pips_gained
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`\n📈 الأرباح الكاملة: `{pips_gained}` Pip"
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1)!**\n🪙 GOLD | نقل الستوب لنقطة الدخول (`{active_trade['entry']:.2f}`)."
+                pips_gained = round((entry - tp1) * 10, 1)
+                msg = (
+                    f"🎯 **تحقق الهدف الأول (TP1)!** (+{pips_gained} Pip)\n"
+                    f"💰 **توصية:** إغلاق 50% من العقود ونقل الستوب لنقطة الدخول (`{entry:.2f}`)."
+                )
                 return "UPDATE", msg
 
         return None, None
 
-    # 2. تحليل SMC الفني الصافي
+    # 2. فحص الأخبار الاقتصادية قبل فتح صفقة جديدة
+    has_news, news_title = is_news_time()
+    if has_news:
+        print(f"Skipping trade due to high impact news: {news_title}")
+        return None, None
+
+    # 3. تحليل SMC الفني الصافي
     smc_m1 = detect_smc_structure(df_m1)
     smc_m5 = detect_smc_structure(df_m5)
     tf_bias = get_multi_tf_smc()
@@ -177,6 +252,7 @@ def check_signal():
         "tp1_hit": False
     }
 
+    daily_stats["total_trades"] += 1
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
 
     message = f"""{signal_emoji} **{trade}**
@@ -190,18 +266,42 @@ def check_signal():
 """
     return "NEW_TRADE", message
 
+async def send_daily_summary():
+    """إرسال التقرير اليومي التلقائي مع نهاية اليوم"""
+    pips = daily_stats["total_pips"]
+    pips_str = f"+{pips:.1f}" if pips >= 0 else f"{pips:.1f}"
+    
+    summary_msg = f"""📊 **التقرير اليومي لأداء البوت** 📊
+
+🔢 **إجمالي الصفقات:** `{daily_stats['total_trades']}`
+✅ **الربحة:** `{daily_stats['wins']}`
+❌ **الخاسرة:** `{daily_stats['losses']}`
+📈 **صافي النقاط:** `{pips_str}` Pips
+
+منير يحييكم وينتظركم غداً مع صفقات جديدة! 🚀
+"""
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=summary_msg,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Summary Error: {e}")
+
 async def main():
     global last_trade_time
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت بنظام SMC وتنسيق الرسائل الجديد بنجاح!"
+            text="⚡ تم تشغيل البوت بنظام SMC (مع فلتر الأخبار + الإغلاق الجزئي + التقرير اليومي) بنجاح!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
 
     last_hourly_report = datetime.now()
+    daily_summary_sent_today = False
 
     while True:
         try:
@@ -216,6 +316,15 @@ async def main():
             now = datetime.now()
             time_since_last_report = (now - last_hourly_report).total_seconds()
             time_since_last_trade = (now - last_trade_time).total_seconds()
+
+            # إرسال التقرير اليومي عند الساعة 23:55 ليلاً
+            if now.hour == 23 and now.minute >= 55 and not daily_summary_sent_today:
+                await send_daily_summary()
+                daily_summary_sent_today = True
+
+            # إعادة ضبط إرسال التقرير اليومي عند بداية يوم جديد
+            if now.hour == 0 and now.minute < 5:
+                daily_summary_sent_today = False
 
             if time_since_last_report >= 3600:
                 if time_since_last_trade >= 3600:
