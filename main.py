@@ -42,21 +42,21 @@ def detect_smc_structure(df):
     closes = df["close"]
     opens = df["open"]
 
-    # تحديد القمم والقيعان السابقة (منعاً لإدراج الشمعة الحالية)
+    # تحديد القمم والقيعان السابقة
     recent_high = highs.tail(15).iloc[:-1].max()
     recent_low = lows.tail(15).iloc[:-1].min()
 
     last_close = closes.iloc[-1]
 
-    # 1. كسر الهيكل (BOS) بإغلاق الشمعة
+    # 1. كسر الهيكل (BOS)
     bos_bullish = last_close > recent_high
     bos_bearish = last_close < recent_low
 
-    # 2. الفجوة السعرية (FVG) النقية لآخر 3 شموع مكتملة
+    # 2. الفجوة السعرية (FVG)
     fvg_bullish = (lows.iloc[-1] > highs.iloc[-3]) and (closes.iloc[-2] > opens.iloc[-2])
     fvg_bearish = (highs.iloc[-1] < lows.iloc[-3]) and (closes.iloc[-2] < opens.iloc[-2])
 
-    # 3. مستويات الستوب الهيكلي (أقل قاع / أعلى قمة في الحركة الأخيرة)
+    # 3. مستويات الستوب الهيكلي
     sl_buy = lows.tail(6).min()
     sl_sell = highs.tail(6).max()
 
@@ -104,30 +104,30 @@ def check_signal():
 
         if trade_type == "BUY":
             if price <= sl:
-                msg = f"❌ **ضربت إيقاف الخسارة (SL)**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"❌ **ضربت إيقاف الخسارة (SL)**\n🪙 GOLD | السعر: `{price:.2f}`"
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp2:
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - SMC)!**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`"
                 active_trade = None
                 return "UPDATE", msg
             elif price >= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1 - SMC)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
+                msg = f"🎯 **تحقق الهدف الأول (TP1)!**\n🪙 GOLD | نقل الستوب لنقطة الدخول (`{active_trade['entry']:.2f}`)."
                 return "UPDATE", msg
 
         elif trade_type == "SELL":
             if price >= sl:
-                msg = f"❌ **ضربت إيقاف الخسارة (SL)**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"❌ **ضربت إيقاف الخسارة (SL)**\n🪙 GOLD | السعر: `{price:.2f}`"
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp2:
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2 - SMC)!**\n🪙 GOLD | السعر: {price:.2f}"
+                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`"
                 active_trade = None
                 return "UPDATE", msg
             elif price <= tp1 and not active_trade.get("tp1_hit"):
                 active_trade["tp1_hit"] = True
-                msg = f"🎯 **تحقق الهدف الأول (TP1 - SMC)!**\n🪙 GOLD | ننصح بنقل الستوب لنقطة الدخول ({active_trade['entry']:.2f})."
+                msg = f"🎯 **تحقق الهدف الأول (TP1)!**\n🪙 GOLD | نقل الستوب لنقطة الدخول (`{active_trade['entry']:.2f}`)."
                 return "UPDATE", msg
 
         return None, None
@@ -140,20 +140,19 @@ def check_signal():
     trade = None
     sl = 0
 
-    # شروط الشراء SMC الصافية:
-    # كسر هيكل على M1 + (فجوة FVG أو كسر هيكل على M5) + الاتجاه العام صاعد على M15
+    # شروط الشراء SMC:
     if smc_m1["bos_bullish"] and (smc_m1["fvg_bullish"] or smc_m5["bos_bullish"]) and tf_bias == "BULLISH":
         trade = "BUY"
-        sl = smc_m1["sl_buy"] - 0.50  # ستوب أسفل قاع الهيكل بـ 50 سنت
+        sl = smc_m1["sl_buy"] - 0.50
         risk = price - sl
         if risk <= 0: return None, None
-        tp1 = price + (risk * 1.5)  # نسبة عائد 1:1.5
-        tp2 = price + (risk * 3.0)  # نسبة عائد 1:3.0
+        tp1 = price + (risk * 1.5)
+        tp2 = price + (risk * 3.0)
 
-    # شروط البيع SMC الصافية:
+    # شروط البيع SMC:
     elif smc_m1["bos_bearish"] and (smc_m1["fvg_bearish"] or smc_m5["bos_bearish"]) and tf_bias == "BEARISH":
         trade = "SELL"
-        sl = smc_m1["sl_sell"] + 0.50  # ستوب أعلى قمة الهيكل بـ 50 سنت
+        sl = smc_m1["sl_sell"] + 0.50
         risk = sl - price
         if risk <= 0: return None, None
         tp1 = price - (risk * 1.5)
@@ -180,23 +179,14 @@ def check_signal():
 
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
 
-    message = f"""⚡ **إشارة SMC احترافية تتبع صُنّاع السوق** ⚡
+    message = f"""{signal_emoji} **{trade}**
 
-📌 **القرار:** {signal_emoji} {trade}
-🪙 **الأداة:** GOLD (XAU/USD)
-🕒 **الإطار الزمني:** M1 / M5 / M15
+📍 **سعر الدخول:** `{entry:.2f}`
 
-💵 **سعر الدخول:** {entry:.2f}
-🎯 **هدف أول (TP1):** {tp1:.2f} (1:1.5)
-🎯 **هدف ثاني (TP2):** {tp2:.2f} (1:3.0)
-🛡️ **إيقاف الخسارة (SL):** {sl:.2f} (هيكلي)
+🎯 **الهدف الأول:** `{tp1:.2f}`
+🎯 **الهدف الثاني:** `{tp2:.2f}`
 
-🏛️ **تأكيدات SMC:**
-• **الاتجاه العام (M15 Bias):** {tf_bias} ✅
-• **كسر هيكل (BOS):** متحقق ✅
-• **الفجوة السعرية (FVG):** متوفرة ⚡
-
-⏰ **الوقت:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+🛡️ **الستوب:** `{sl:.2f}`
 """
     return "NEW_TRADE", message
 
@@ -206,7 +196,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت بنظام SMC الصافي 100% بنجاح!"
+            text="⚡ تم تشغيل البوت بنظام SMC وتنسيق الرسائل الجديد بنجاح!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
