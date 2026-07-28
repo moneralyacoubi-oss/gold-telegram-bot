@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, time
+from datetime import datetime
 import requests
 import pandas as pd
 from telegram import Bot
@@ -24,25 +24,22 @@ daily_stats = {
 def is_news_time():
     """
     التحقق من وجود أخبار عالية التأثير على الدولار الأمريكي (High Impact USD News)
-    يتم تجميد التداول قبل وبعد الخبر بـ 15 دقيقة
+    تجميد التداول قبل وبعد الخبر بـ 15 دقيقة
     """
     try:
-        url = "https://nws.forexfactory1.com/forex_calendar.json" # مصدر خفيف وجاهز للأخبار
-        res = requests.get(url, timeout=5).json()
+        url = "https://nws.forexfactory1.com/forex_calendar.json"
+        res = requests.get(url, timeout=4).json()
         now = datetime.now()
         
         for event in res:
             if event.get("country") == "USD" and event.get("impact") == "High":
-                # تحويل وقت الخبر إلى datetime
                 event_time_str = f"{event.get('date')} {event.get('time')}"
                 event_dt = datetime.strptime(event_time_str, "%Y-%m-%d %I:%M%p")
                 
-                # حساب الفارق بالدقائق
                 diff_minutes = abs((now - event_dt).total_seconds()) / 60.0
                 if diff_minutes <= 15:
                     return True, event.get("title")
     except Exception:
-        # في حال حدوث خطأ في شبكة الأخبار، يكمل البوت عمله الطبيعي
         pass
     return False, None
 
@@ -59,8 +56,8 @@ def reset_daily_stats_if_needed():
             "last_reset_date": today
         }
 
-def fetch_data(timeframe, outputsize=100):
-    """جلب بيانات السعر من TwelveData"""
+def fetch_data(timeframe, outputsize=50):
+    """جلب بيانات السعر من TwelveData بحجم خفيف لتجنب حظر الـ API"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
@@ -69,7 +66,7 @@ def fetch_data(timeframe, outputsize=100):
         f"&apikey={API_KEY}"
     )
     try:
-        res = requests.get(url, timeout=10).json()
+        res = requests.get(url, timeout=8).json()
         if "values" not in res:
             return None
         df = pd.DataFrame(res["values"]).iloc[::-1]
@@ -89,8 +86,8 @@ def detect_smc_structure(df):
     closes = df["close"]
     opens = df["open"]
 
-    recent_high = highs.tail(15).iloc[:-1].max()
-    recent_low = lows.tail(15).iloc[:-1].min()
+    recent_high = highs.tail(12).iloc[:-1].max()
+    recent_low = lows.tail(12).iloc[:-1].min()
 
     last_close = closes.iloc[-1]
 
@@ -103,8 +100,8 @@ def detect_smc_structure(df):
     fvg_bearish = (highs.iloc[-1] < lows.iloc[-3]) and (closes.iloc[-2] < opens.iloc[-2])
 
     # 3. مستويات الستوب الهيكلي
-    sl_buy = lows.tail(6).min()
-    sl_sell = highs.tail(6).max()
+    sl_buy = lows.tail(5).min()
+    sl_sell = highs.tail(5).max()
 
     return {
         "bos_bullish": bos_bullish,
@@ -117,7 +114,7 @@ def detect_smc_structure(df):
 
 def get_multi_tf_smc():
     """تحديد اتجاه فريم M15 بناءً على SMC"""
-    df_m15 = fetch_data("15min", 40)
+    df_m15 = fetch_data("15min", 30)
     if df_m15 is None:
         return "NEUTRAL"
 
@@ -134,8 +131,8 @@ def check_signal():
 
     reset_daily_stats_if_needed()
 
-    df_m1 = fetch_data("1min", 80)
-    df_m5 = fetch_data("5min", 80)
+    df_m1 = fetch_data("1min", 60)
+    df_m5 = fetch_data("5min", 60)
 
     if df_m1 is None or df_m5 is None:
         return None, None
@@ -295,7 +292,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت بنظام SMC (مع فلتر الأخبار + الإغلاق الجزئي + التقرير اليومي) بنجاح!"
+            text="⚡ تم تشغيل البوت بنسبة استدعاء متوازنة للبيانات (SMC + فلتر الأخبار) بنجاح!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -317,12 +314,12 @@ async def main():
             time_since_last_report = (now - last_hourly_report).total_seconds()
             time_since_last_trade = (now - last_trade_time).total_seconds()
 
-            # إرسال التقرير اليومي عند الساعة 23:55 ليلاً
+            # إرسال التقرير اليومي الساعة 23:55 ليلاً
             if now.hour == 23 and now.minute >= 55 and not daily_summary_sent_today:
                 await send_daily_summary()
                 daily_summary_sent_today = True
 
-            # إعادة ضبط إرسال التقرير اليومي عند بداية يوم جديد
+            # إعادة ضبط التقرير مع بداية اليوم الجديد
             if now.hour == 0 and now.minute < 5:
                 daily_summary_sent_today = False
 
@@ -338,7 +335,8 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        await asyncio.sleep(30)
+        # فحص كل 45 ثانية لتفادي تجاوز حد الـ API الحساب المجاني
+        await asyncio.sleep(45)
 
 if __name__ == "__main__":
     asyncio.run(main())
