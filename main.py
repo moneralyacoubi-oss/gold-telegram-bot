@@ -9,7 +9,7 @@ from config import BOT_TOKEN, CHAT_ID
 bot = Bot(token=BOT_TOKEN)
 
 # مفتاح API المباشر لتفادي أخطاء الربط
-API_KEY = "C709f322d351444f872f507450a7daa7"
+API_KEY = "c709f322d351444f872f507450a7daa7"
 
 last_signal = None
 active_trade = None
