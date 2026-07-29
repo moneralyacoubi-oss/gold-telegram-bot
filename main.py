@@ -82,14 +82,15 @@ def fetch_data(timeframe, outputsize=50):
         return None
 
 def detect_smc_structure(df):
-    """تحليل SMC نقي (BOS / FVG / Ob Levels)"""
+    """تحليل SMC نقي بمرونة أعلى لاقتناص الفرص السريعة"""
     highs = df["high"]
     lows = df["low"]
     closes = df["close"]
     opens = df["open"]
 
-    recent_high = highs.tail(12).iloc[:-1].max()
-    recent_low = lows.tail(12).iloc[:-1].min()
+    # تم تقليل النطاق إلى 8 شمعات لتسريع التقاط كسر الهيكل BOS
+    recent_high = highs.tail(8).iloc[:-1].max()
+    recent_low = lows.tail(8).iloc[:-1].min()
 
     last_close = closes.iloc[-1]
 
@@ -156,22 +157,18 @@ def check_signal():
                 daily_stats["losses"] += 1
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
-                active_trade = None
+                active_trade = None  # تفريغ البوت لصفقة جديدة
                 return "UPDATE", msg, None
-            elif price >= tp2:
-                pips_gained = round((tp2 - entry) * 10, 1)
+            elif price >= tp1:
+                pips_gained = round((tp1 - entry) * 10, 1)
                 daily_stats["wins"] += 1
                 daily_stats["total_pips"] += pips_gained
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`\n📈 الأرباح الكاملة: `{pips_gained}` Pip"
-                active_trade = None
-                return "UPDATE", msg, None
-            elif price >= tp1 and not active_trade.get("tp1_hit"):
-                active_trade["tp1_hit"] = True
-                pips_gained = round((tp1 - entry) * 10, 1)
                 msg = (
                     f"🎯 **تحقق الهدف الأول (TP1)!** (+{pips_gained} Pip)\n"
-                    f"💰 **توصية:** إغلاق 50% من العقود ونقل الستوب لنقطة الدخول (`{entry:.2f}`)."
+                    f"💰 **توصية:** إغلاق 50% ونقل الستوب لنقطة الدخول (`{entry:.2f}`).\n"
+                    f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
+                active_trade = None  # تفريغ البوت فوراً عند TP1 لاقتناص الفرصة التالية
                 return "UPDATE", msg, None
 
         elif trade_type == "SELL":
@@ -180,22 +177,18 @@ def check_signal():
                 daily_stats["losses"] += 1
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
-                active_trade = None
+                active_trade = None  # تفريغ البوت لصفقة جديدة
                 return "UPDATE", msg, None
-            elif price <= tp2:
-                pips_gained = round((entry - tp2) * 10, 1)
+            elif price <= tp1:
+                pips_gained = round((entry - tp1) * 10, 1)
                 daily_stats["wins"] += 1
                 daily_stats["total_pips"] += pips_gained
-                msg = f"🎯🎯 **تم ضرب الهدف الثاني بنجاح (TP2)!**\n🪙 GOLD | السعر: `{price:.2f}`\n📈 الأرباح الكاملة: `{pips_gained}` Pip"
-                active_trade = None
-                return "UPDATE", msg, None
-            elif price <= tp1 and not active_trade.get("tp1_hit"):
-                active_trade["tp1_hit"] = True
-                pips_gained = round((entry - tp1) * 10, 1)
                 msg = (
                     f"🎯 **تحقق الهدف الأول (TP1)!** (+{pips_gained} Pip)\n"
-                    f"💰 **توصية:** إغلاق 50% من العقود ونقل الستوب لنقطة الدخول (`{entry:.2f}`)."
+                    f"💰 **توصية:** إغلاق 50% ونقل الستوب لنقطة الدخول (`{entry:.2f}`).\n"
+                    f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
+                active_trade = None  # تفريغ البوت فوراً عند TP1 لاقتناص الفرصة التالية
                 return "UPDATE", msg, None
 
         return None, None, None
@@ -245,8 +238,7 @@ def check_signal():
         "entry": entry,
         "tp1": tp1,
         "tp2": tp2,
-        "sl": sl,
-        "tp1_hit": False
+        "sl": sl
     }
 
     daily_stats["total_trades"] += 1
@@ -293,7 +285,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت بالسعر الفوري (Spot Gold) مع دعم إرسال صورة الشارت والتقرير اليومي 11:55 مساءً!"
+            text="⚡ تم تحديث البوت لزيادة مرونة الصفقات والتفريغ السريع عند TP1!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
