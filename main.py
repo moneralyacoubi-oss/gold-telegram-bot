@@ -58,18 +58,18 @@ def reset_daily_stats_if_needed():
         }
 
 def fetch_data(timeframe, outputsize=50):
-    """جلب بيانات السعر الفوري (Spot Gold) من TwelveData"""
+    """جلب بيانات السعر الفوري للذهب مع طباعة الاستجابة التشخيصية"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
         f"&interval={timeframe}"
-        f"&type=Spot"
         f"&outputsize={outputsize}"
         f"&apikey={API_KEY}"
     )
     try:
         res = requests.get(url, timeout=8).json()
         if "values" not in res:
+            print(f"⚠️ API Response Error: {res}")
             return None
         df = pd.DataFrame(res["values"]).iloc[::-1]
         df["close"] = df["close"].astype(float)
@@ -89,7 +89,7 @@ def detect_fast_signals(df):
 
     last_close = closes.iloc[-1]
 
-    # فحص كسر أعلى/أقل سعر لآخر 4 شمعات فقط (اقتناص أسرع)
+    # فحص كسر أعلى/أقل سعر لآخر 4 شمعات فقط
     recent_high = highs.tail(5).iloc[:-1].max()
     recent_low = lows.tail(5).iloc[:-1].min()
 
@@ -114,7 +114,6 @@ def check_signal():
     df_m5 = fetch_data("5min", 40)
 
     if df_m5 is None:
-        print("⚠️ فشل في جلب البيانات من API")
         return None, None, None
 
     close = df_m5["close"]
@@ -271,7 +270,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل النسخة السريعة! البوت جاهز لاقتناص أي كسر مباشر على M5."
+            text="⚡ تم تشغيل النسخة المحدثة! جارٍ فحص بيانات السوق المباشرة..."
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -332,8 +331,8 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # زمن الانتظار بين الفحوصات (30 ثانية لاستجابة أسرع)
-        await asyncio.sleep(30)
+        # انتظار 45 ثانية بين الفحوصات لتفادي استهلاك الحدود المجانية
+        await asyncio.sleep(45)
 
 if __name__ == "__main__":
     asyncio.run(main())
