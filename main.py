@@ -4,15 +4,17 @@ import requests
 import pandas as pd
 from telegram import Bot
 
-from config import BOT_TOKEN, CHAT_ID, API_KEY
+from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-last_signal = None
-active_trade = None  # لمتابعة حالة الصفقة الحالية
-last_trade_time = datetime.now()  # تتبع وقت آخر صفقة مرسلة
+# مفتاح API المباشر لتفادي أخطاء الربط
+API_KEY = "C709f322d351444f872f507450a7daa7"
 
-# متغيرات التقرير اليومي
+last_signal = None
+active_trade = None
+last_trade_time = datetime.now()
+
 daily_stats = {
     "total_trades": 0,
     "wins": 0,
@@ -22,11 +24,9 @@ daily_stats = {
 }
 
 def get_chart_url():
-    """توليد رابط صورة شارت حية ومباشرة للذهب من Finviz/TradingView"""
     return "https://charts2.finviz.com/chart.ashx?t=GOLD&tf=m5"
 
 def is_news_time():
-    """فحص الأخبار عالية التأثير على الدولار الأمريكي (USD)"""
     try:
         url = "https://nws.forexfactory1.com/forex_calendar.json"
         res = requests.get(url, timeout=4).json()
@@ -45,7 +45,6 @@ def is_news_time():
     return False, None
 
 def reset_daily_stats_if_needed():
-    """إعادة إحصائيات اليوم عند تغيير التاريخ"""
     global daily_stats
     today = datetime.now().date()
     if daily_stats["last_reset_date"] != today:
@@ -58,7 +57,6 @@ def reset_daily_stats_if_needed():
         }
 
 def fetch_data(timeframe, outputsize=50):
-    """جلب بيانات السعر الفوري للذهب مع طباعة الاستجابة التشخيصية"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
@@ -82,14 +80,12 @@ def fetch_data(timeframe, outputsize=50):
         return None
 
 def detect_fast_signals(df):
-    """تحليل سريع جداً لاقتناص كسر الهيكل بدون فلاتر معقدة"""
     highs = df["high"]
     lows = df["low"]
     closes = df["close"]
 
     last_close = closes.iloc[-1]
 
-    # فحص كسر أعلى/أقل سعر لآخر 4 شمعات فقط
     recent_high = highs.tail(5).iloc[:-1].max()
     recent_low = lows.tail(5).iloc[:-1].min()
 
@@ -119,10 +115,8 @@ def check_signal():
     close = df_m5["close"]
     price = float(close.iloc[-1])
     
-    # طباعة السعر في الـ Logs للرصد الحقيقي
     print(f"🔍 [تحليل حي] سعر الذهب الحالي: {price:.2f} | الوقت: {datetime.now().strftime('%H:%M:%S')}")
 
-    # 1. متابعة حالة الصفقة الحالية (TP / SL / Timeout)
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -130,7 +124,6 @@ def check_signal():
         sl = active_trade["sl"]
         entry_time = active_trade.get("entry_time", datetime.now())
 
-        # إلغاء الصفقات الميتة بعد 120 دقيقة
         time_elapsed = (datetime.now() - entry_time).total_seconds() / 60.0
         if time_elapsed >= 120:
             msg = f"⏳ **إلغاء متابعة صفقة ({trade_type})**\nسبب الإلغاء: بطء الحركة وتذبذب السعر لأكثر من ساعتين.\n⚡ البوت متفرغ الآن لفرص جديدة."
@@ -179,13 +172,11 @@ def check_signal():
 
         return None, None, None
 
-    # 2. فحص الأخبار الاقتصادية
     has_news, news_title = is_news_time()
     if has_news:
         print(f"🛑 تجنب الدخول بسبب الأخبار: {news_title}")
         return None, None, None
 
-    # 3. تحليل الفرص السريعة
     signals = detect_fast_signals(df_m5)
 
     trade = None
@@ -242,7 +233,6 @@ def check_signal():
     return "NEW_TRADE", message, chart_image
 
 async def send_daily_summary():
-    """إرسال التقرير اليومي التلقائي"""
     pips = daily_stats["total_pips"]
     pips_str = f"+{pips:.1f}" if pips >= 0 else f"{pips:.1f}"
     
@@ -307,15 +297,12 @@ async def main():
             time_since_last_report = (now - last_hourly_report).total_seconds()
             time_since_last_trade = (now - last_trade_time).total_seconds()
 
-            # حساب وقت التقرير بتوقيت العراق محلياً (UTC+3)
             local_hour = (now.hour + 3) % 24
 
-            # إرسال التقرير اليومي الساعة 11:55 ليلاً بتوقيت العراق
             if local_hour == 23 and now.minute >= 55 and not daily_summary_sent_today:
                 await send_daily_summary()
                 daily_summary_sent_today = True
 
-            # إعادة تعيين شرط التقرير لليوم الجديد
             if local_hour == 0 and now.minute < 5:
                 daily_summary_sent_today = False
 
@@ -331,7 +318,6 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # انتظار 45 ثانية بين الفحوصات لتفادي استهلاك الحدود المجانية
         await asyncio.sleep(45)
 
 if __name__ == "__main__":
