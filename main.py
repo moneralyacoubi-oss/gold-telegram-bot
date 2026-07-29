@@ -88,7 +88,7 @@ def detect_smc_structure(df):
     closes = df["close"]
     opens = df["open"]
 
-    # تم تقليل النطاق إلى 8 شمعات لتسريع التقاط كسر الهيكل BOS
+    # نطاق 8 شمعات لتسريع التقاط كسر الهيكل BOS
     recent_high = highs.tail(8).iloc[:-1].max()
     recent_low = lows.tail(8).iloc[:-1].min()
 
@@ -143,13 +143,20 @@ def check_signal():
     close = df_m1["close"]
     price = float(close.iloc[-1])
 
-    # 1. متابعة حالة الصفقة الحالية (TP / SL)
+    # 1. متابعة حالة الصفقة الحالية (TP / SL / Timeout)
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
         tp1 = active_trade["tp1"]
-        tp2 = active_trade["tp2"]
         sl = active_trade["sl"]
+        entry_time = active_trade.get("entry_time", datetime.now())
+
+        # فحص مرور أكثر من ساعتين (120 دقيقة) على الصفقة بدون النتيجة
+        time_elapsed = (datetime.now() - entry_time).total_seconds() / 60.0
+        if time_elapsed >= 120:
+            msg = f"⏳ **إلغاء متابعة صفقة الـ ({trade_type})**\nسبب الإلغاء: تذبذب السعر وبطء الحركة لأكثر من ساعتين.\n⚡ البوت متفرغ الآن للبحث عن صفقات جديدة."
+            active_trade = None  # تفريغ البوت
+            return "UPDATE", msg, None
 
         if trade_type == "BUY":
             if price <= sl:
@@ -157,7 +164,7 @@ def check_signal():
                 daily_stats["losses"] += 1
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
-                active_trade = None  # تفريغ البوت لصفقة جديدة
+                active_trade = None  # تفريغ البوت
                 return "UPDATE", msg, None
             elif price >= tp1:
                 pips_gained = round((tp1 - entry) * 10, 1)
@@ -168,7 +175,7 @@ def check_signal():
                     f"💰 **توصية:** إغلاق 50% ونقل الستوب لنقطة الدخول (`{entry:.2f}`).\n"
                     f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
-                active_trade = None  # تفريغ البوت فوراً عند TP1 لاقتناص الفرصة التالية
+                active_trade = None  # تفريغ البوت
                 return "UPDATE", msg, None
 
         elif trade_type == "SELL":
@@ -177,7 +184,7 @@ def check_signal():
                 daily_stats["losses"] += 1
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
-                active_trade = None  # تفريغ البوت لصفقة جديدة
+                active_trade = None  # تفريغ البوت
                 return "UPDATE", msg, None
             elif price <= tp1:
                 pips_gained = round((entry - tp1) * 10, 1)
@@ -188,7 +195,7 @@ def check_signal():
                     f"💰 **توصية:** إغلاق 50% ونقل الستوب لنقطة الدخول (`{entry:.2f}`).\n"
                     f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
-                active_trade = None  # تفريغ البوت فوراً عند TP1 لاقتناص الفرصة التالية
+                active_trade = None  # تفريغ البوت
                 return "UPDATE", msg, None
 
         return None, None, None
@@ -238,7 +245,8 @@ def check_signal():
         "entry": entry,
         "tp1": tp1,
         "tp2": tp2,
-        "sl": sl
+        "sl": sl,
+        "entry_time": datetime.now()  # تسجيل وقت فتح الصفقة
     }
 
     daily_stats["total_trades"] += 1
@@ -285,7 +293,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تحديث البوت لزيادة مرونة الصفقات والتفريغ السريع عند TP1!"
+            text="⚡ تم تشغيل البوت المحدث مع خاصية إلغاء الصفقات البطيئة بعد ساعتين!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -346,7 +354,7 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # زمن الانتظار المثالي لتفادي حظر API المجاني
+        # زمن الانتظار لتفادي حظر API المجاني
         await asyncio.sleep(45)
 
 if __name__ == "__main__":
