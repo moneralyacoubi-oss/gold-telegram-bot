@@ -22,21 +22,11 @@ daily_stats = {
 }
 
 def get_chart_url():
-    """توليد رابط صورة شارت حية للذهب من TradingView"""
-    # رابط صورة شارت للذهب XAUUSD
-    chart_url = "https://s3.tradingview.com/snapshots/x/XAUUSD_5m.png"
-    # يمكن استخدام خدمة توليد الشارتات المباشرة QuickChart أو TradingView Widget
-    quick_chart_url = (
-        "https://quickchart.io/chart/render/sf-12345" 
-        "?width=800&height=400&devicePixelRatio=1"
-    )
-    # رابط مباشر لشارت الذهب التفاعلي
-    tv_snapshot_url = "https://charts2.finviz.com/chart.ashx?t=GOLD&tf=m5"
-    
-    return tv_snapshot_url
+    """توليد رابط صورة شارت حية ومباشرة للذهب من Finviz/TradingView"""
+    return "https://charts2.finviz.com/chart.ashx?t=GOLD&tf=m5"
 
 def is_news_time():
-    """فحص الأخبار عالية التأثير على الدولار الأمريكي"""
+    """فحص الأخبار عالية التأثير على الدولار الأمريكي (USD)"""
     try:
         url = "https://nws.forexfactory1.com/forex_calendar.json"
         res = requests.get(url, timeout=4).json()
@@ -68,11 +58,12 @@ def reset_daily_stats_if_needed():
         }
 
 def fetch_data(timeframe, outputsize=50):
-    """جلب بيانات السعر من TwelveData"""
+    """جلب بيانات السعر الفوري (Spot Gold) من TwelveData المطابقة لـ MetaTrader"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
         f"&interval={timeframe}"
+        f"&type=Spot"
         f"&outputsize={outputsize}"
         f"&apikey={API_KEY}"
     )
@@ -215,7 +206,7 @@ def check_signal():
         print(f"Skipping trade due to news: {news_title}")
         return None, None, None
 
-    # 3. تحليل SMC الفني
+    # 3. تحليل SMC الفني الصافي
     smc_m1 = detect_smc_structure(df_m1)
     smc_m5 = detect_smc_structure(df_m5)
     tf_bias = get_multi_tf_smc()
@@ -302,7 +293,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل البوت بنسبة SMC وميزة إرسال صورة الشارت التلقائية!"
+            text="⚡ تم تشغيل البوت بالسعر الفوري (Spot Gold) مع دعم إرسال صورة الشارت والتقرير اليومي 11:55 مساءً!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -315,7 +306,6 @@ async def main():
             status, msg, chart_img = check_signal()
             if msg:
                 if status == "NEW_TRADE" and chart_img:
-                    # إرسال صورة الشارت مع نص الصفقة
                     try:
                         await bot.send_photo(
                             chat_id=CHAT_ID,
@@ -324,7 +314,6 @@ async def main():
                             parse_mode="Markdown"
                         )
                     except Exception:
-                        # في حال تعذر جلب الصورة يرسل النص فقط
                         await bot.send_message(
                             chat_id=CHAT_ID,
                             text=msg,
@@ -341,7 +330,7 @@ async def main():
             time_since_last_report = (now - last_hourly_report).total_seconds()
             time_since_last_trade = (now - last_trade_time).total_seconds()
 
-            # حساب الوقت بتوقيت العراق محلياً (UTC+3)
+            # حساب وقت التقرير بتوقيت العراق محلياً (UTC+3)
             local_hour = (now.hour + 3) % 24
 
             # إرسال التقرير اليومي الساعة 11:55 ليلاً بتوقيت العراق
@@ -349,6 +338,7 @@ async def main():
                 await send_daily_summary()
                 daily_summary_sent_today = True
 
+            # إعادة تعيين شرط التقرير لليوم الجديد
             if local_hour == 0 and now.minute < 5:
                 daily_summary_sent_today = False
 
@@ -364,6 +354,7 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
+        # زمن الانتظار المثالي لتفادي حظر API المجاني
         await asyncio.sleep(45)
 
 if __name__ == "__main__":
