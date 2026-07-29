@@ -58,7 +58,7 @@ def reset_daily_stats_if_needed():
         }
 
 def fetch_data(timeframe, outputsize=50):
-    """جلب بيانات السعر الفوري (Spot Gold) من TwelveData المطابقة لـ MetaTrader"""
+    """جلب بيانات السعر الفوري (Spot Gold) من TwelveData"""
     url = (
         f"https://api.twelvedata.com/time_series"
         f"?symbol=XAU/USD"
@@ -81,40 +81,27 @@ def fetch_data(timeframe, outputsize=50):
         print(f"Error fetching {timeframe}: {e}")
         return None
 
-def detect_smc_v2(df):
-    """تحليل SMC M5 المطور بأسلوب أسرع وأكثر اقتناصاً للفرص"""
+def detect_fast_signals(df):
+    """تحليل سريع جداً لاقتناص كسر الهيكل بدون فلاتر معقدة"""
     highs = df["high"]
     lows = df["low"]
     closes = df["close"]
-    opens = df["open"]
 
-    # حساب المتوسط المتحرك EMA 20 لتحديد الاتجاه بسلاسة
-    ema20 = closes.ewm(span=20, adjust=False).mean().iloc[-1]
     last_close = closes.iloc[-1]
 
-    # فحص كسر أعلى/أقل سعر لآخر 8 شمعات (BOS)
-    recent_high = highs.tail(8).iloc[:-1].max()
-    recent_low = lows.tail(8).iloc[:-1].min()
+    # فحص كسر أعلى/أقل سعر لآخر 4 شمعات فقط (اقتناص أسرع)
+    recent_high = highs.tail(5).iloc[:-1].max()
+    recent_low = lows.tail(5).iloc[:-1].min()
 
     bos_bullish = last_close > recent_high
     bos_bearish = last_close < recent_low
 
-    # فحص الفجوة السعرية (FVG)
-    fvg_bullish = lows.iloc[-1] > highs.iloc[-3]
-    fvg_bearish = highs.iloc[-1] < lows.iloc[-3]
-
-    # تحديد اتجاه EMA
-    ema_trend = "BULLISH" if last_close > ema20 else "BEARISH"
-
-    sl_buy = lows.tail(4).min()
-    sl_sell = highs.tail(4).max()
+    sl_buy = lows.tail(3).min()
+    sl_sell = highs.tail(3).max()
 
     return {
         "bos_bullish": bos_bullish,
         "bos_bearish": bos_bearish,
-        "fvg_bullish": fvg_bullish,
-        "fvg_bearish": fvg_bearish,
-        "ema_trend": ema_trend,
         "sl_buy": sl_buy,
         "sl_sell": sl_sell
     }
@@ -124,7 +111,7 @@ def check_signal():
 
     reset_daily_stats_if_needed()
 
-    df_m5 = fetch_data("5min", 60)
+    df_m5 = fetch_data("5min", 40)
 
     if df_m5 is None:
         print("⚠️ فشل في جلب البيانات من API")
@@ -132,6 +119,9 @@ def check_signal():
 
     close = df_m5["close"]
     price = float(close.iloc[-1])
+    
+    # طباعة السعر في الـ Logs للرصد الحقيقي
+    print(f"🔍 [تحليل حي] سعر الذهب الحالي: {price:.2f} | الوقت: {datetime.now().strftime('%H:%M:%S')}")
 
     # 1. متابعة حالة الصفقة الحالية (TP / SL / Timeout)
     if active_trade:
@@ -196,29 +186,27 @@ def check_signal():
         print(f"🛑 تجنب الدخول بسبب الأخبار: {news_title}")
         return None, None, None
 
-    # 3. تحليل SMC V2 على فريم M5
-    smc = detect_smc_v2(df_m5)
+    # 3. تحليل الفرص السريعة
+    signals = detect_fast_signals(df_m5)
 
     trade = None
     sl = 0
 
-    # دخول شراء: كسر هيكل صاعد + الاتجاه صاعد (أو وجود FVG)
-    if smc["bos_bullish"] and (smc["ema_trend"] == "BULLISH" or smc["fvg_bullish"]):
+    if signals["bos_bullish"]:
         trade = "BUY"
-        sl = smc["sl_buy"] - 0.40
+        sl = signals["sl_buy"] - 0.30
         risk = price - sl
         if risk <= 0: return None, None, None
-        tp1 = price + (risk * 1.5)
-        tp2 = price + (risk * 3.0)
+        tp1 = price + (risk * 1.2)
+        tp2 = price + (risk * 2.5)
 
-    # دخول بيع: كسر هيكل هابط + الاتجاه هابط (أو وجود FVG)
-    elif smc["bos_bearish"] and (smc["ema_trend"] == "BEARISH" or smc["fvg_bearish"]):
+    elif signals["bos_bearish"]:
         trade = "SELL"
-        sl = smc["sl_sell"] + 0.40
+        sl = signals["sl_sell"] + 0.30
         risk = sl - price
         if risk <= 0: return None, None, None
-        tp1 = price - (risk * 1.5)
-        tp2 = price - (risk * 3.0)
+        tp1 = price - (risk * 1.2)
+        tp2 = price - (risk * 2.5)
     else:
         return None, None, None
 
@@ -283,7 +271,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="🚀 تم تشغيل البوت المطور باستراتيجية SMC V2 السريعة والمرنة على M5!"
+            text="⚡ تم تشغيل النسخة السريعة! البوت جاهز لاقتناص أي كسر مباشر على M5."
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -344,8 +332,8 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        # زمن الانتظار لتفادي حظر API المجاني
-        await asyncio.sleep(45)
+        # زمن الانتظار بين الفحوصات (30 ثانية لاستجابة أسرع)
+        await asyncio.sleep(30)
 
 if __name__ == "__main__":
     asyncio.run(main())
