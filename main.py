@@ -9,7 +9,7 @@ from config import BOT_TOKEN, CHAT_ID
 bot = Bot(token=BOT_TOKEN)
 
 # مفتاح API مباشر مع تنظيف المسافات تلقائياً
-RAW_API_KEY = "C709f322d351444f872f507450a7daa7"
+RAW_API_KEY = "cb1f9932d7124712a00369b086397a05"
 API_KEY = RAW_API_KEY.strip()
 
 last_signal = None
