@@ -8,9 +8,8 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-# مفتاح API مباشر مع تنظيف المسافات تلقائياً
-RAW_API_KEY = "cfbd0d0216a94e3c8affdf990d0a14a7"
-API_KEY = RAW_API_KEY.strip()
+# ⚠️ ضع مفتاح TwelveData الخاص بك هنا
+API_KEY = "YOUR_TWELVEDATA_API_KEY_HERE".strip()
 
 last_signal = None
 active_trade = None
@@ -58,7 +57,7 @@ def reset_daily_stats_if_needed():
             "last_reset_date": today
         }
 
-def fetch_data(timeframe, outputsize=50):
+def fetch_data(timeframe, outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={timeframe}&outputsize={outputsize}&apikey={API_KEY}"
     try:
         res = requests.get(url, timeout=8).json()
@@ -75,21 +74,34 @@ def fetch_data(timeframe, outputsize=50):
         print(f"Error fetching {timeframe}: {e}")
         return None
 
-def detect_fast_signals(df):
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def detect_smart_signals(df):
+    closes = df["close"]
     highs = df["high"]
     lows = df["low"]
-    closes = df["close"]
 
     last_close = closes.iloc[-1]
 
-    recent_high = highs.tail(5).iloc[:-1].max()
-    recent_low = lows.tail(5).iloc[:-1].min()
+    ema_200 = closes.ewm(span=200, adjust=False).mean().iloc[-1]
+    rsi = calculate_rsi(closes, 14).iloc[-1]
 
-    bos_bullish = last_close > recent_high
-    bos_bearish = last_close < recent_low
+    recent_high = highs.tail(6).iloc[:-1].max()
+    recent_low = lows.tail(6).iloc[:-1].min()
 
-    sl_buy = lows.tail(3).min()
-    sl_sell = highs.tail(3).max()
+    is_uptrend = last_close > ema_200
+    is_downtrend = last_close < ema_200
+
+    bos_bullish = (last_close > recent_high) and is_uptrend and (rsi < 68)
+    bos_bearish = (last_close < recent_low) and is_downtrend and (rsi > 32)
+
+    sl_buy = lows.tail(3).min() - 0.20
+    sl_sell = highs.tail(3).max() + 0.20
 
     return {
         "bos_bullish": bos_bullish,
@@ -103,9 +115,9 @@ def check_signal():
 
     reset_daily_stats_if_needed()
 
-    df_m5 = fetch_data("5min", 40)
+    df_m5 = fetch_data("5min", 100)
 
-    if df_m5 is None:
+    if df_m5 is None or len(df_m5) < 50:
         return None, None, None
 
     close = df_m5["close"]
@@ -120,13 +132,7 @@ def check_signal():
         sl = active_trade["sl"]
         entry_time = active_trade.get("entry_time", datetime.now())
 
-        time_elapsed = (datetime.now() - entry_time).total_seconds() / 60.0
-        if time_elapsed >= 120:
-            msg = f"⏳ **إلغاء متابعة صفقة ({trade_type})**\nسبب الإلغاء: بطء الحركة وتذبذب السعر لأكثر من ساعتين.\n⚡ البوت متفرغ الآن لفرص جديدة."
-            active_trade = None
-            last_trade_closed_time = datetime.now()
-            return "UPDATE", msg, None
-
+        # متابعة أهداف/ستوب الصفقة أولاً
         if trade_type == "BUY":
             if price <= sl:
                 pips_lost = round((sl - entry) * 10, 1)
@@ -171,11 +177,41 @@ def check_signal():
                 last_trade_closed_time = datetime.now()
                 return "UPDATE", msg, None
 
+        # شرط مرور 120 دقيقة (ساعتين) دون تحقيق الهدف أو الستوب
+        time_elapsed = (datetime.now() - entry_time).total_seconds() / 60.0
+        if time_elapsed >= 120:
+            if trade_type == "BUY":
+                diff_pips = round((price - entry) * 10, 1)
+            else:
+                diff_pips = round((entry - price) * 10, 1)
+
+            if diff_pips > 0:
+                result_text = f"على ربح (+{diff_pips} Pip) 🟢"
+                daily_stats["wins"] += 1
+                daily_stats["total_pips"] += diff_pips
+            elif diff_pips < 0:
+                result_text = f"على خسارة ({diff_pips} Pip) 🔴 بعدين نعوضها إن شاء الله 🚀"
+                daily_stats["losses"] += 1
+                daily_stats["total_pips"] += diff_pips
+            else:
+                result_text = "على نقطة الدخول تماماً ⚖️"
+
+            msg = (
+                f"⏳ **إغلاق الصفقة يدويًا (مرور ساعتين)**\n\n"
+                f"الصفقة: **{trade_type}**\n"
+                f"📍 سعر الدخول: `{entry:.2f}`\n"
+                f"📊 السعر الحالي: `{price:.2f}`\n\n"
+                f"💡 **التوصية:** اخرجو منها الآن {result_text}\n"
+                f"⚡ البوت متفرغ الآن ومستعد لصفقات قادمة."
+            )
+            active_trade = None
+            last_trade_closed_time = datetime.now()
+            return "UPDATE", msg, None
+
         return None, None, None
 
-    # مهلة 10 دقائق بعد إغلاق أي صفقة
     cooldown_minutes = (datetime.now() - last_trade_closed_time).total_seconds() / 60.0
-    if cooldown_minutes < 10:
+    if cooldown_minutes < 15:
         return None, None, None
 
     has_news, news_title = is_news_time()
@@ -183,26 +219,28 @@ def check_signal():
         print(f"🛑 تجنب الدخول بسبب الأخبار: {news_title}")
         return None, None, None
 
-    signals = detect_fast_signals(df_m5)
+    signals = detect_smart_signals(df_m5)
 
     trade = None
     sl = 0
 
     if signals["bos_bullish"]:
         trade = "BUY"
-        sl = signals["sl_buy"] - 0.30
+        calculated_sl = signals["sl_buy"]
+        sl = max(calculated_sl, price - 3.50)
         risk = price - sl
-        if risk <= 0: return None, None, None
-        tp1 = price + (risk * 1.2)
-        tp2 = price + (risk * 2.5)
+        if risk <= 0.5: return None, None, None
+        tp1 = price + (risk * 1.5)
+        tp2 = price + (risk * 3.0)
 
     elif signals["bos_bearish"]:
         trade = "SELL"
-        sl = signals["sl_sell"] + 0.30
+        calculated_sl = signals["sl_sell"]
+        sl = min(calculated_sl, price + 3.50)
         risk = sl - price
-        if risk <= 0: return None, None, None
-        tp1 = price - (risk * 1.2)
-        tp2 = price - (risk * 2.5)
+        if risk <= 0.5: return None, None, None
+        tp1 = price - (risk * 1.5)
+        tp2 = price - (risk * 3.0)
     else:
         return None, None, None
 
@@ -226,14 +264,14 @@ def check_signal():
     daily_stats["total_trades"] += 1
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
 
-    message = f"""{signal_emoji} **{trade}**
+    message = f"""{signal_emoji} **{trade}** (مفلترة 🛡️)
 
 📍 **سعر الدخول:** `{entry:.2f}`
 
 🎯 **الهدف الأول:** `{tp1:.2f}`
 🎯 **الهدف الثاني:** `{tp2:.2f}`
 
-🛡️ **الستوب:** `{sl:.2f}`
+🛡️ **الستوب المحمي:** `{sl:.2f}`
 """
     chart_image = get_chart_url()
     return "NEW_TRADE", message, chart_image
@@ -266,7 +304,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل النسخة المستقرة (فصل 10 دقائق بين الصفقات + مفتاح معالج)."
+            text="⚡ تم تحديث نظام التنبيهات: البوت يعطي تقريراً حقيقياً ومفصلاً بالنطاق والأرباح/الخسائر بعد ساعتين!"
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
@@ -324,7 +362,7 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}")
 
-        await asyncio.sleep(45)
+        await asyncio.sleep(110)
 
 if __name__ == "__main__":
     asyncio.run(main())
