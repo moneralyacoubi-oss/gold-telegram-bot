@@ -8,13 +8,14 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-# مفتاح API المباشر
-API_KEY = "C709f322d351444f872f507450a7daa7"
+# مفتاح API مباشر مع تنظيف المسافات تلقائياً
+RAW_API_KEY = "C709f322d351444f872f507450a7daa7"
+API_KEY = RAW_API_KEY.strip()
 
 last_signal = None
 active_trade = None
 last_trade_time = datetime.now()
-last_trade_closed_time = datetime.now()  # تتبع وقت إغلاق آخر صفقة
+last_trade_closed_time = datetime.now()
 
 daily_stats = {
     "total_trades": 0,
@@ -58,13 +59,7 @@ def reset_daily_stats_if_needed():
         }
 
 def fetch_data(timeframe, outputsize=50):
-    url = (
-        f"https://api.twelvedata.com/time_series"
-        f"?symbol=XAU/USD"
-        f"&interval={timeframe}"
-        f"&outputsize={outputsize}"
-        f"&apikey={API_KEY}"
-    )
+    url = f"https://api.twelvedata.com/time_series?symbol=XAU/USD&interval={timeframe}&outputsize={outputsize}&apikey={API_KEY}"
     try:
         res = requests.get(url, timeout=8).json()
         if "values" not in res:
@@ -118,7 +113,6 @@ def check_signal():
     
     print(f"🔍 [تحليل حي] سعر الذهب الحالي: {price:.2f} | الوقت: {datetime.now().strftime('%H:%M:%S')}")
 
-    # 1. متابعة حالة الصفقة الحالية (TP / SL / Timeout)
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -179,7 +173,7 @@ def check_signal():
 
         return None, None, None
 
-    # شرط الحماية: عدم فتح صفقة جديدة إلا بعد مرور 10 دقائق من إغلاق الصفقة السابقة
+    # مهلة 10 دقائق بعد إغلاق أي صفقة
     cooldown_minutes = (datetime.now() - last_trade_closed_time).total_seconds() / 60.0
     if cooldown_minutes < 10:
         return None, None, None
@@ -272,7 +266,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تحديث فترة الانتظار بين الصفقات إلى 10 دقائق! البوت جاهز ومستقر."
+            text="⚡ تم تشغيل النسخة المستقرة (فصل 10 دقائق بين الصفقات + مفتاح معالج)."
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
