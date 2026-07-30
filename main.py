@@ -8,8 +8,8 @@ from telegram import Bot
 from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
-4ae67ca80f844c3ba85c3fae51daa8c5
-API_KEY = "YOUR_TWELVEDATA_API_KEY_HERE".strip()
+
+API_KEY = "4ae67ca80f844c3ba85c3fae51daa8c5".strip()
 
 # ضبط التوقيت المحلي على بغداد (UTC+3)
 IRAQ_TZ = pytz.timezone("Asia/Baghdad")
