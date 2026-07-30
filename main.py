@@ -9,7 +9,7 @@ from config import BOT_TOKEN, CHAT_ID
 bot = Bot(token=BOT_TOKEN)
 
 # ⚠️ ضع مفتاح TwelveData الخاص بك هنا
-API_KEY = "YOUR_TWELVEDATA_API_KEY_HERE".strip()
+API_KEY = "4ae67ca80f844c3ba85c3fae51daa8c5".strip()
 
 last_signal = None
 active_trade = None
