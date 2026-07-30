@@ -132,7 +132,7 @@ def check_signal():
         sl = active_trade["sl"]
         entry_time = active_trade.get("entry_time", datetime.now())
 
-        # متابعة أهداف/ستوب الصفقة أولاً
+        # 1. التفتيش عن ضرب الهدف أو الستوب أولاً
         if trade_type == "BUY":
             if price <= sl:
                 pips_lost = round((sl - entry) * 10, 1)
@@ -177,7 +177,7 @@ def check_signal():
                 last_trade_closed_time = datetime.now()
                 return "UPDATE", msg, None
 
-        # شرط مرور 120 دقيقة (ساعتين) دون تحقيق الهدف أو الستوب
+        # 2. التفتيش عن مرور ساعتين (120 دقيقة)
         time_elapsed = (datetime.now() - entry_time).total_seconds() / 60.0
         if time_elapsed >= 120:
             if trade_type == "BUY":
@@ -186,23 +186,23 @@ def check_signal():
                 diff_pips = round((entry - price) * 10, 1)
 
             if diff_pips > 0:
-                result_text = f"على ربح (+{diff_pips} Pip) 🟢"
+                advice = f"اخرجوا منها الآن **بربح (+{diff_pips} Pip) 🟢**"
                 daily_stats["wins"] += 1
                 daily_stats["total_pips"] += diff_pips
             elif diff_pips < 0:
-                result_text = f"على خسارة ({diff_pips} Pip) 🔴 بعدين نعوضها إن شاء الله 🚀"
+                advice = f"اخرجوا منها الآن **بخسارة ({diff_pips} Pip) 🔴**، بعدين نعوضها إن شاء الله 🚀"
                 daily_stats["losses"] += 1
                 daily_stats["total_pips"] += diff_pips
             else:
-                result_text = "على نقطة الدخول تماماً ⚖️"
+                advice = "اخرجوا منها الآن **على نقطة الدخول ⚖️**"
 
             msg = (
-                f"⏳ **إغلاق الصفقة يدويًا (مرور ساعتين)**\n\n"
+                f"⏳ **تحديث الصفقة (مرور ساعتين)**\n\n"
                 f"الصفقة: **{trade_type}**\n"
                 f"📍 سعر الدخول: `{entry:.2f}`\n"
                 f"📊 السعر الحالي: `{price:.2f}`\n\n"
-                f"💡 **التوصية:** اخرجو منها الآن {result_text}\n"
-                f"⚡ البوت متفرغ الآن ومستعد لصفقات قادمة."
+                f"💡 **توصية منير:** {advice}\n"
+                f"⚡ البوت متفرغ الآن لفرص جديدة."
             )
             active_trade = None
             last_trade_closed_time = datetime.now()
@@ -304,7 +304,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تحديث نظام التنبيهات: البوت يعطي تقريراً حقيقياً ومفصلاً بالنطاق والأرباح/الخسائر بعد ساعتين!"
+            text="⚡ تم التحديث بنجاح! تم استبدال تنبيه الإلغاء بتنبيه تفصيلي يحدد الربح/الخسارة بالنِقاط وتوصية خروج واضحة."
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
