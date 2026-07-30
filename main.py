@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 import requests
 import pandas as pd
+import pytz
 from telegram import Bot
 
 from config import BOT_TOKEN, CHAT_ID
@@ -11,17 +12,23 @@ bot = Bot(token=BOT_TOKEN)
 # ⚠️ ضع مفتاح TwelveData الخاص بك هنا
 API_KEY = "4ae67ca80f844c3ba85c3fae51daa8c5".strip()
 
+# ضبط التوقيت المحلي على بغداد (UTC+3)
+IRAQ_TZ = pytz.timezone("Asia/Baghdad")
+
+def get_now():
+    return datetime.now(IRAQ_TZ)
+
 last_signal = None
 active_trade = None
-last_trade_time = datetime.now()
-last_trade_closed_time = datetime.now()
+last_trade_time = get_now()
+last_trade_closed_time = get_now()
 
 daily_stats = {
     "total_trades": 0,
     "wins": 0,
     "losses": 0,
     "total_pips": 0.0,
-    "last_reset_date": datetime.now().date()
+    "last_reset_date": get_now().date()
 }
 
 def get_chart_url():
@@ -31,7 +38,7 @@ def is_news_time():
     try:
         url = "https://nws.forexfactory1.com/forex_calendar.json"
         res = requests.get(url, timeout=4).json()
-        now = datetime.now()
+        now = get_now().replace(tzinfo=None)
         
         for event in res:
             if event.get("country") == "USD" and event.get("impact") == "High":
@@ -47,7 +54,7 @@ def is_news_time():
 
 def reset_daily_stats_if_needed():
     global daily_stats
-    today = datetime.now().date()
+    today = get_now().date()
     if daily_stats["last_reset_date"] != today:
         daily_stats = {
             "total_trades": 0,
@@ -122,17 +129,18 @@ def check_signal():
 
     close = df_m5["close"]
     price = float(close.iloc[-1])
+    now = get_now()
     
-    print(f"🔍 [تحليل حي] سعر الذهب الحالي: {price:.2f} | الوقت: {datetime.now().strftime('%H:%M:%S')}")
+    print(f"🔍 [تحليل حي] سعر الذهب الحالي: {price:.2f} | الوقت: {now.strftime('%H:%M:%S')}")
 
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
         tp1 = active_trade["tp1"]
         sl = active_trade["sl"]
-        entry_time = active_trade.get("entry_time", datetime.now())
+        entry_time = active_trade.get("entry_time", now)
 
-        # 1. التفتيش عن ضرب الهدف أو الستوب أولاً
+        # 1. التفتيش عن ضرب الهدف أو الستوب
         if trade_type == "BUY":
             if price <= sl:
                 pips_lost = round((sl - entry) * 10, 1)
@@ -140,7 +148,7 @@ def check_signal():
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
                 active_trade = None
-                last_trade_closed_time = datetime.now()
+                last_trade_closed_time = now
                 return "UPDATE", msg, None
             elif price >= tp1:
                 pips_gained = round((tp1 - entry) * 10, 1)
@@ -152,7 +160,7 @@ def check_signal():
                     f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
                 active_trade = None
-                last_trade_closed_time = datetime.now()
+                last_trade_closed_time = now
                 return "UPDATE", msg, None
 
         elif trade_type == "SELL":
@@ -162,7 +170,7 @@ def check_signal():
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
                 active_trade = None
-                last_trade_closed_time = datetime.now()
+                last_trade_closed_time = now
                 return "UPDATE", msg, None
             elif price <= tp1:
                 pips_gained = round((entry - tp1) * 10, 1)
@@ -174,11 +182,11 @@ def check_signal():
                     f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
                 active_trade = None
-                last_trade_closed_time = datetime.now()
+                last_trade_closed_time = now
                 return "UPDATE", msg, None
 
         # 2. التفتيش عن مرور ساعتين (120 دقيقة)
-        time_elapsed = (datetime.now() - entry_time).total_seconds() / 60.0
+        time_elapsed = (now - entry_time).total_seconds() / 60.0
         if time_elapsed >= 120:
             if trade_type == "BUY":
                 diff_pips = round((price - entry) * 10, 1)
@@ -205,12 +213,12 @@ def check_signal():
                 f"⚡ البوت متفرغ الآن لفرص جديدة."
             )
             active_trade = None
-            last_trade_closed_time = datetime.now()
+            last_trade_closed_time = now
             return "UPDATE", msg, None
 
         return None, None, None
 
-    cooldown_minutes = (datetime.now() - last_trade_closed_time).total_seconds() / 60.0
+    cooldown_minutes = (now - last_trade_closed_time).total_seconds() / 60.0
     if cooldown_minutes < 15:
         return None, None, None
 
@@ -249,7 +257,7 @@ def check_signal():
         return None, None, None
 
     last_signal = current_signal
-    last_trade_time = datetime.now()
+    last_trade_time = now
 
     entry = price
     active_trade = {
@@ -258,7 +266,7 @@ def check_signal():
         "tp1": tp1,
         "tp2": tp2,
         "sl": sl,
-        "entry_time": datetime.now()
+        "entry_time": now
     }
 
     daily_stats["total_trades"] += 1
@@ -304,12 +312,12 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم التحديث بنجاح! تم استبدال تنبيه الإلغاء بتنبيه تفصيلي يحدد الربح/الخسارة بالنِقاط وتوصية خروج واضحة."
+            text="⚡ تم التحديث بنجاح! تم ضبط التوقيت حسب توقيت بغداد مع نظام التنبيهات والاستراتيجية الجديدة."
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
 
-    last_hourly_report = datetime.now()
+    last_hourly_report = get_now()
     daily_summary_sent_today = False
 
     while True:
@@ -337,17 +345,15 @@ async def main():
                         parse_mode="Markdown"
                     )
 
-            now = datetime.now()
+            now = get_now()
             time_since_last_report = (now - last_hourly_report).total_seconds()
             time_since_last_trade = (now - last_trade_time).total_seconds()
 
-            local_hour = (now.hour + 3) % 24
-
-            if local_hour == 23 and now.minute >= 55 and not daily_summary_sent_today:
+            if now.hour == 23 and now.minute >= 55 and not daily_summary_sent_today:
                 await send_daily_summary()
                 daily_summary_sent_today = True
 
-            if local_hour == 0 and now.minute < 5:
+            if now.hour == 0 and now.minute < 5:
                 daily_summary_sent_today = False
 
             if time_since_last_report >= 3600:
