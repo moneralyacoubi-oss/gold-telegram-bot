@@ -8,12 +8,13 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-# مفتاح API المباشر لتفادي أخطاء الربط
-API_KEY = "c709f322d351444f872f507450a7daa7"
+# مفتاح API المباشر
+API_KEY = "C709f322d351444f872f507450a7daa7"
 
 last_signal = None
 active_trade = None
 last_trade_time = datetime.now()
+last_trade_closed_time = datetime.now()  # تتبع وقت إغلاق آخر صفقة
 
 daily_stats = {
     "total_trades": 0,
@@ -103,7 +104,7 @@ def detect_fast_signals(df):
     }
 
 def check_signal():
-    global last_signal, active_trade, last_trade_time, daily_stats
+    global last_signal, active_trade, last_trade_time, daily_stats, last_trade_closed_time
 
     reset_daily_stats_if_needed()
 
@@ -117,6 +118,7 @@ def check_signal():
     
     print(f"🔍 [تحليل حي] سعر الذهب الحالي: {price:.2f} | الوقت: {datetime.now().strftime('%H:%M:%S')}")
 
+    # 1. متابعة حالة الصفقة الحالية (TP / SL / Timeout)
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -128,6 +130,7 @@ def check_signal():
         if time_elapsed >= 120:
             msg = f"⏳ **إلغاء متابعة صفقة ({trade_type})**\nسبب الإلغاء: بطء الحركة وتذبذب السعر لأكثر من ساعتين.\n⚡ البوت متفرغ الآن لفرص جديدة."
             active_trade = None
+            last_trade_closed_time = datetime.now()
             return "UPDATE", msg, None
 
         if trade_type == "BUY":
@@ -137,6 +140,7 @@ def check_signal():
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
                 active_trade = None
+                last_trade_closed_time = datetime.now()
                 return "UPDATE", msg, None
             elif price >= tp1:
                 pips_gained = round((tp1 - entry) * 10, 1)
@@ -148,6 +152,7 @@ def check_signal():
                     f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
                 active_trade = None
+                last_trade_closed_time = datetime.now()
                 return "UPDATE", msg, None
 
         elif trade_type == "SELL":
@@ -157,6 +162,7 @@ def check_signal():
                 daily_stats["total_pips"] += pips_lost
                 msg = f"❌ **ضربت الستوب (SL)**\n🪙 GOLD | السعر: `{price:.2f}`\n📉 النقاط: `{pips_lost}` Pip"
                 active_trade = None
+                last_trade_closed_time = datetime.now()
                 return "UPDATE", msg, None
             elif price <= tp1:
                 pips_gained = round((entry - tp1) * 10, 1)
@@ -168,8 +174,14 @@ def check_signal():
                     f"⚡ البوت متاح الآن لاستقبال أي صفقة جديدة."
                 )
                 active_trade = None
+                last_trade_closed_time = datetime.now()
                 return "UPDATE", msg, None
 
+        return None, None, None
+
+    # شرط الحماية: عدم فتح صفقة جديدة إلا بعد مرور 10 دقائق من إغلاق الصفقة السابقة
+    cooldown_minutes = (datetime.now() - last_trade_closed_time).total_seconds() / 60.0
+    if cooldown_minutes < 10:
         return None, None, None
 
     has_news, news_title = is_news_time()
@@ -260,7 +272,7 @@ async def main():
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ تم تشغيل النسخة المحدثة! جارٍ فحص بيانات السوق المباشرة..."
+            text="⚡ تم تحديث فترة الانتظار بين الصفقات إلى 10 دقائق! البوت جاهز ومستقر."
         )
     except Exception as e:
         print(f"Telegram Error: {e}")
