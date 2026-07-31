@@ -88,23 +88,11 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def check_fvg_conditions(df):
-    highs = df["high"]
-    lows = df["low"]
-    
-    # فجوة صاعدة (دعم للشراء)
-    bullish_fvg = lows.iloc[-1] > highs.iloc[-3]
-    # فجوة هابطة (مقاومة للبيع)
-    bearish_fvg = highs.iloc[-1] < lows.iloc[-3]
-    
-    return bullish_fvg, bearish_fvg
-
 def detect_smart_signals(df_m5, df_h1):
     h1_closes = df_h1["close"]
     h1_ema200 = h1_closes.ewm(span=200, adjust=False).mean().iloc[-1]
     h1_last_close = h1_closes.iloc[-1]
     
-    # تحديد اتجاه الفريم الأكبر بصراحة
     h1_is_uptrend = h1_last_close > h1_ema200
     h1_is_downtrend = h1_last_close < h1_ema200
 
@@ -119,23 +107,15 @@ def detect_smart_signals(df_m5, df_h1):
     recent_high = m5_highs.tail(6).iloc[:-1].max()
     recent_low = m5_lows.tail(6).iloc[:-1].min()
 
-    # شروط دخول الشراء والبيع مع تأكيد الاتجاه
-    bos_bullish = (m5_last_close > recent_high) and (m5_last_close > m5_ema200) and h1_is_uptrend and (rsi < 68)
-    bos_bearish = (m5_last_close < recent_low) and (m5_last_close < m5_ema200) and h1_is_downtrend and (rsi > 32)
-
-    bullish_fvg, bearish_fvg = check_fvg_conditions(df_m5)
-    
-    # الصفقة تعتبر "زيرو انعكاس" إذا توافقت إشارة الكسر ويا الفجوة بنفس الاتجاه بالضبط
-    is_zero_drawdown_buy = bos_bullish and bullish_fvg
-    is_zero_drawdown_sell = bos_bearish and bearish_fvg
+    # شروط كسر الهيكل الكلاسيكية الموثوقة مع اتجاه الـ H1
+    bos_bullish = (m5_last_close > recent_high) and (m5_last_close > m5_ema200) and h1_is_uptrend and (rsi < 70)
+    bos_bearish = (m5_last_close < recent_low) and (m5_last_close < m5_ema200) and h1_is_downtrend and (rsi > 30)
 
     return {
         "bos_bullish": bos_bullish,
         "bos_bearish": bos_bearish,
-        "is_zero_buy": is_zero_drawdown_buy,
-        "is_zero_sell": is_zero_drawdown_sell,
-        "sl_buy": m5_lows.tail(3).min(),
-        "sl_sell": m5_highs.tail(3).max()
+        "sl_buy": m5_lows.tail(4).min(),
+        "sl_sell": m5_highs.tail(4).max()
     }
 
 def get_pip_multiplier(symbol):
@@ -157,7 +137,7 @@ def process_symbol(symbol):
     now = get_now()
     pip_mult = get_pip_multiplier(symbol)
 
-    print(f"🔍 [تحليل] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
+    print(f"🔍 [تحليل مستقر] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
 
     active_trade = active_trades[symbol]
 
@@ -179,7 +159,7 @@ def process_symbol(symbol):
                 msg = (
                     f"🛡️ **تأمين الصفقة (Breakeven)!**\n"
                     f"الرمز: **{symbol}** | النوع: **BUY**\n"
-                    f"💡 **حققت الصفقة +{be_trigger_pips} نقطة:** تم نقل الستوب تلقائياً إلى نقطة الدخول (`{entry:.4f}`)."
+                    f"💡 **حققت الصفقة +{be_trigger_pips} نقطة:** تم نقل الستوب لنقطة الدخول (`{entry:.4f}`)."
                 )
                 return "UPDATE", msg
 
@@ -207,7 +187,7 @@ def process_symbol(symbol):
                 msg = (
                     f"🛡️ **تأمين الصفقة (Breakeven)!**\n"
                     f"الرمز: **{symbol}** | النوع: **SELL**\n"
-                    f"💡 **حققت الصفقة +{be_trigger_pips} نقطة:** تم نقل الستوب تلقائياً إلى نقطة الدخول (`{entry:.4f}`)."
+                    f"💡 **حققت الصفقة +{be_trigger_pips} نقطة:** تم نقل الستوب لنقطة الدخول (`{entry:.4f}`)."
                 )
                 return "UPDATE", msg
 
@@ -249,15 +229,12 @@ def process_symbol(symbol):
     signals = detect_smart_signals(df_m5, df_h1)
 
     trade = None
-    is_zero = False
     sl = 0
-
-    sl_buffer = 0.20 if "XAU" in symbol else 0.0008
+    sl_buffer = 0.40 if "XAU" in symbol else 0.0012
 
     if signals["bos_bullish"]:
         trade = "BUY"
-        is_zero = signals["is_zero_buy"]
-        sl = signals["sl_buy"] - (sl_buffer * 0.5 if is_zero else sl_buffer)
+        sl = signals["sl_buy"] - sl_buffer
         risk = price - sl
         if risk <= 0: return None, None
         tp1 = price + (risk * 1.5)
@@ -265,8 +242,7 @@ def process_symbol(symbol):
 
     elif signals["bos_bearish"]:
         trade = "SELL"
-        is_zero = signals["is_zero_sell"]
-        sl = signals["sl_sell"] + (sl_buffer * 0.5 if is_zero else sl_buffer)
+        sl = signals["sl_sell"] + sl_buffer
         risk = sl - price
         if risk <= 0: return None, None
         tp1 = price - (risk * 1.5)
@@ -296,9 +272,7 @@ def process_symbol(symbol):
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
     tv_symbol = "OANDA:XAUUSD" if "XAU" in symbol else "FX:EURUSD"
 
-    zero_tag = "\n🔥 **[صفقة زيرو انعكاس - SMC Corrected]** 🔥\n" if is_zero else ""
-
-    message = f"""{signal_emoji} **{trade}** ({symbol}){zero_tag}
+    message = f"""{signal_emoji} **{trade}** ({symbol})
 
 📍 **سعر الدخول:** `{entry:.4f}`
 
@@ -323,15 +297,7 @@ async def send_daily_summary():
 async def main():
     global last_trade_time
 
-    print("🚀 البوت بدأ العمل الآن بالنسخة المصححة الاتجاه...", flush=True)
-
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text="🚀 **تم إطلاق التحديث الجوهري لتطابق اتجاه الصفقات!**\n\nالبوت الآن يربط كل صفقة باتجاه السوق العام لتفادي الإشارات المعكوسة."
-        )
-    except Exception as e:
-        print(f"Telegram Error: {e}", flush=True)
+    print("🚀 البوت بدأ العمل الآن بالنسخة المستقرة...", flush=True)
 
     last_hourly_report = get_now()
     daily_summary_sent_today = False
