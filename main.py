@@ -69,7 +69,7 @@ def fetch_data(symbol, timeframe, outputsize=100):
     try:
         res = requests.get(url, timeout=8).json()
         if "values" not in res:
-            print(f"⚠️ API Response Error ({symbol} - {timeframe}): {res}")
+            print(f"⚠️ API Response Error ({symbol} - {timeframe}): {res}", flush=True)
             return None
         df = pd.DataFrame(res["values"]).iloc[::-1]
         df["close"] = df["close"].astype(float)
@@ -78,7 +78,7 @@ def fetch_data(symbol, timeframe, outputsize=100):
         df["low"] = df["low"].astype(float)
         return df
     except Exception as e:
-        print(f"Error fetching {symbol} {timeframe}: {e}")
+        print(f"Error fetching {symbol} {timeframe}: {e}", flush=True)
         return None
 
 def calculate_rsi(series, period=14):
@@ -88,14 +88,13 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-# 🔍 فحص شرط زيرو انعكاس (FVG + Order Block Touch)
-def check_zero_drawdown_conditions(df):
+def check_fvg_conditions(df):
     highs = df["high"]
     lows = df["low"]
     
-    # وجود Fair Value Gap للشراء (القمة 1 أقل من القاع 3)
+    # فجوة صاعدة (دعم للشراء)
     bullish_fvg = lows.iloc[-1] > highs.iloc[-3]
-    # وجود Fair Value Gap للبيع (القاع 1 أعلى من القمة 3)
+    # فجوة هابطة (مقاومة للبيع)
     bearish_fvg = highs.iloc[-1] < lows.iloc[-3]
     
     return bullish_fvg, bearish_fvg
@@ -105,6 +104,7 @@ def detect_smart_signals(df_m5, df_h1):
     h1_ema200 = h1_closes.ewm(span=200, adjust=False).mean().iloc[-1]
     h1_last_close = h1_closes.iloc[-1]
     
+    # تحديد اتجاه الفريم الأكبر بصراحة
     h1_is_uptrend = h1_last_close > h1_ema200
     h1_is_downtrend = h1_last_close < h1_ema200
 
@@ -119,12 +119,13 @@ def detect_smart_signals(df_m5, df_h1):
     recent_high = m5_highs.tail(6).iloc[:-1].max()
     recent_low = m5_lows.tail(6).iloc[:-1].min()
 
+    # شروط دخول الشراء والبيع مع تأكيد الاتجاه
     bos_bullish = (m5_last_close > recent_high) and (m5_last_close > m5_ema200) and h1_is_uptrend and (rsi < 68)
     bos_bearish = (m5_last_close < recent_low) and (m5_last_close < m5_ema200) and h1_is_downtrend and (rsi > 32)
 
-    # فحص شروط الزيرو انعكاس الإضافية
-    bullish_fvg, bearish_fvg = check_zero_drawdown_conditions(df_m5)
+    bullish_fvg, bearish_fvg = check_fvg_conditions(df_m5)
     
+    # الصفقة تعتبر "زيرو انعكاس" إذا توافقت إشارة الكسر ويا الفجوة بنفس الاتجاه بالضبط
     is_zero_drawdown_buy = bos_bullish and bullish_fvg
     is_zero_drawdown_sell = bos_bearish and bearish_fvg
 
@@ -155,6 +156,8 @@ def process_symbol(symbol):
     price = float(close.iloc[-1])
     now = get_now()
     pip_mult = get_pip_multiplier(symbol)
+
+    print(f"🔍 [تحليل] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
 
     active_trade = active_trades[symbol]
 
@@ -224,7 +227,6 @@ def process_symbol(symbol):
                 last_trade_closed_times[symbol] = now
                 return "UPDATE", msg
 
-        # مرور ساعتين
         time_elapsed = (now - entry_time).total_seconds() / 60.0
         if time_elapsed >= 120:
             diff_pips = round(((price - entry) if trade_type == "BUY" else (entry - price)) * pip_mult, 1)
@@ -255,7 +257,6 @@ def process_symbol(symbol):
     if signals["bos_bullish"]:
         trade = "BUY"
         is_zero = signals["is_zero_buy"]
-        # إذا كانت زيرو انعكاس نضغط الستوب لوس أكثر لزيادة الدقة
         sl = signals["sl_buy"] - (sl_buffer * 0.5 if is_zero else sl_buffer)
         risk = price - sl
         if risk <= 0: return None, None
@@ -295,8 +296,7 @@ def process_symbol(symbol):
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
     tv_symbol = "OANDA:XAUUSD" if "XAU" in symbol else "FX:EURUSD"
 
-    # إضافة وسام خاص إذا كانت الصفقة زيرو انعكاس
-    zero_tag = "\n🔥 **[صفقة زيرو انعكاس - SMC Duality]** 🔥\n" if is_zero else ""
+    zero_tag = "\n🔥 **[صفقة زيرو انعكاس - SMC Corrected]** 🔥\n" if is_zero else ""
 
     message = f"""{signal_emoji} **{trade}** ({symbol}){zero_tag}
 
@@ -323,13 +323,15 @@ async def send_daily_summary():
 async def main():
     global last_trade_time
 
+    print("🚀 البوت بدأ العمل الآن بالنسخة المصححة الاتجاه...", flush=True)
+
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="🚀 **تم دمج إضافة زيرو انعكاس بنجاح!**\n\nالبوت يحلل الصفقات الاعتيادية، وعند اكتشاف فجوة سعرية مع كسر دقيق سيقوم بتصنيف الصفقة كـ **[زيرو انعكاس 🔥]**."
+            text="🚀 **تم إطلاق التحديث الجوهري لتطابق اتجاه الصفقات!**\n\nالبوت الآن يربط كل صفقة باتجاه السوق العام لتفادي الإشارات المعكوسة."
         )
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        print(f"Telegram Error: {e}", flush=True)
 
     last_hourly_report = get_now()
     daily_summary_sent_today = False
@@ -364,7 +366,7 @@ async def main():
                 last_hourly_report = now
 
         except Exception as e:
-            print(f"Loop Error: {e}")
+            print(f"Loop Error: {e}", flush=True)
 
         await asyncio.sleep(100)
 
