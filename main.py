@@ -54,10 +54,9 @@ daily_stats = {
 }
 
 def is_high_liquidity_session():
-    """التحقق من جلسات التداول القوية (لندن ونيويورك) بتوقيت بغداد"""
+    """جلسات التداول القوية (لندن ونيويورك) بتوقيت بغداد"""
     now = get_now()
     hour = now.hour
-    # جلسة لندن (10 ص - 6 م) وجلسة نيويورك (3:30 م - 11 م)
     if 10 <= hour <= 23:
         return True
     return False
@@ -98,7 +97,7 @@ def fetch_data(symbol, timeframe, outputsize=100):
     try:
         res = requests.get(url, timeout=8).json()
         if "values" not in res:
-            print(f"⚠️ API Error ({symbol} - {timeframe}) مع المفتاح: {res}", flush=True)
+            print(f"⚠️ API Error ({symbol} - {timeframe}): {res}", flush=True)
             return None
         df = pd.DataFrame(res["values"]).iloc[::-1]
         df["close"] = df["close"].astype(float)
@@ -118,7 +117,6 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 def detect_advanced_smc_signals(df_m5, df_h1):
-    """خوارزمية SMC المتقدمة: اتجاه هرمي + سحب سيولة + كسر حقيقي"""
     h1_closes = df_h1["close"]
     h1_ema200 = h1_closes.ewm(span=200, adjust=False).mean().iloc[-1]
     h1_last_close = h1_closes.iloc[-1]
@@ -135,15 +133,12 @@ def detect_advanced_smc_signals(df_m5, df_h1):
     m5_ema200 = m5_closes.ewm(span=200, adjust=False).mean().iloc[-1]
     rsi = calculate_rsi(m5_closes, 14).iloc[-1]
 
-    # تحديد أعلى قمة وأقل قاع في آخر 10 شمعات
     recent_high = m5_highs.tail(10).iloc[:-2].max()
     recent_low = m5_lows.tail(10).iloc[:-2].min()
 
-    # شرط سحب السيولة (Liquidity Sweep): السعر ضرب القمة/القاع وعاد بالإغلاق فوق/تحت
     sweep_bullish = (df_m5["low"].iloc[-2] < recent_low) and (m5_prev_close > recent_low)
     sweep_bearish = (df_m5["high"].iloc[-2] > recent_high) and (m5_prev_close < recent_high)
 
-    # شروط دخول صريحة ومحكمة
     bos_bullish = (m5_last_close > recent_high) and (m5_last_close > m5_ema200) and h1_is_uptrend and (rsi < 68) and not sweep_bearish
     bos_bearish = (m5_last_close < recent_low) and (m5_last_close < m5_ema200) and h1_is_downtrend and (rsi > 32) and not sweep_bullish
 
@@ -162,7 +157,6 @@ def process_symbol(symbol):
 
     reset_daily_stats_if_needed()
 
-    # إلغاء الصفقات خارج أوقات السيولة المرتفعة
     if not is_high_liquidity_session():
         return None, None
 
@@ -177,39 +171,46 @@ def process_symbol(symbol):
     now = get_now()
     pip_mult = get_pip_multiplier(symbol)
 
-    print(f"⚡ [تحليل SMC ذكي] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
+    print(f"⚡ [تحليل SMC] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
 
     active_trade = active_trades[symbol]
 
+    # --- إدارة الصفقات المفتوحة المعدلة لحل التأمين السريع ---
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
         tp1 = active_trade["tp1"]
         sl = active_trade["sl"]
         is_be_moved = active_trade.get("be_moved", False)
-        entry_time = active_trade.get("entry_time", now)
-
-        be_trigger_pips = 18.0 if "XAU" in symbol else 12.0
+        
+        target_distance = abs(tp1 - entry)
+        be_trigger_pips = 45.0 if "XAU" in symbol else 15.0 # 4.5$ بالذهب بدلاً من 1.8$
 
         if trade_type == "BUY":
             current_gain_pips = (price - entry) * pip_mult
-            if current_gain_pips >= be_trigger_pips and not is_be_moved:
-                active_trades[symbol]["sl"] = entry
+            progress = (price - entry) / target_distance if target_distance > 0 else 0
+            
+            # التأمين الحقيقي: تحرك 4.5$ بالذهب + قطع 50% نحو الهدف
+            if current_gain_pips >= be_trigger_pips and progress >= 0.50 and not is_be_moved:
+                # رفع الستوب فوق الدخول بـ 20 سنت حماية للسبريد
+                active_trades[symbol]["sl"] = entry + (0.20 if "XAU" in symbol else 0.0002)
                 active_trades[symbol]["be_moved"] = True
                 msg = (
-                    f"🛡️ **تأمين الصفقة تلقائياً (Breakeven)!**\n"
+                    f"🛡️ **تأمين الصفقة (Breakeven)!**\n"
                     f"الرمز: **{symbol}** | النوع: **BUY**\n"
-                    f"💡 **حققت الصفقة +{be_trigger_pips} نقطة:** تم نقل الستوب لنقطة الدخول (`{entry:.4f}`)."
+                    f"💡 **حققت الصفقة +{current_gain_pips:.1f} نقطة:** تم نقل الستوب لنقطة محصنة فوق الدخول."
                 )
                 return "UPDATE", msg
 
+            # ضرب الستوب أو الدخول
             if price <= active_trades[symbol]["sl"]:
                 pips_result = round((active_trades[symbol]["sl"] - entry) * pip_mult, 1)
-                msg = f"⚖️ **إغلاق الدخول (BE)**" if pips_result >= 0 else f"❌ **ضربت الستوب (SL)**\n📉 الخسارة: `{pips_result}` Pip"
+                msg = f"⚖️ **إغلاق على تأمين (BE)**" if pips_result >= 0 else f"❌ **ضربت الستوب (SL)**\n📉 الخسارة: `{pips_result}` Pip"
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
                 return "UPDATE", msg
 
+            # تحقيق الهدف الأول
             elif price >= tp1:
                 pips_gained = round((tp1 - entry) * pip_mult, 1)
                 daily_stats["wins"] += 1
@@ -221,23 +222,29 @@ def process_symbol(symbol):
 
         elif trade_type == "SELL":
             current_gain_pips = (entry - price) * pip_mult
-            if current_gain_pips >= be_trigger_pips and not is_be_moved:
-                active_trades[symbol]["sl"] = entry
+            progress = (entry - price) / target_distance if target_distance > 0 else 0
+            
+            # التأمين الحقيقي: تحرك 4.5$ بالذهب + قطع 50% نحو الهدف
+            if current_gain_pips >= be_trigger_pips and progress >= 0.50 and not is_be_moved:
+                # تنزيل الستوب تحت الدخول بـ 20 سنت حماية للسبريد
+                active_trades[symbol]["sl"] = entry - (0.20 if "XAU" in symbol else 0.0002)
                 active_trades[symbol]["be_moved"] = True
                 msg = (
-                    f"🛡️ **تأمين الصفقة تلقائياً (Breakeven)!**\n"
+                    f"🛡️ **تأمين الصفقة (Breakeven)!**\n"
                     f"الرمز: **{symbol}** | النوع: **SELL**\n"
-                    f"💡 **حققت الصفقة +{be_trigger_pips} نقطة:** تم نقل الستوب لنقطة الدخول (`{entry:.4f}`)."
+                    f"💡 **حققت الصفقة +{current_gain_pips:.1f} نقطة:** تم نقل الستوب لنقطة محصنة تحت الدخول."
                 )
                 return "UPDATE", msg
 
+            # ضرب الستوب أو الدخول
             if price >= active_trades[symbol]["sl"]:
                 pips_result = round((entry - active_trades[symbol]["sl"]) * pip_mult, 1)
-                msg = f"⚖️ **إغلاق الدخول (BE)**" if pips_result >= 0 else f"❌ **ضربت الستوب (SL)**\n📉 الخسارة: `{pips_result}` Pip"
+                msg = f"⚖️ **إغلاق على تأمين (BE)**" if pips_result >= 0 else f"❌ **ضربت الستوب (SL)**\n📉 الخسارة: `{pips_result}` Pip"
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
                 return "UPDATE", msg
 
+            # تحقيق الهدف الأول
             elif price <= tp1:
                 pips_gained = round((entry - tp1) * pip_mult, 1)
                 daily_stats["wins"] += 1
@@ -246,15 +253,6 @@ def process_symbol(symbol):
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
                 return "UPDATE", msg
-
-        time_elapsed = (now - entry_time).total_seconds() / 60.0
-        if time_elapsed >= 120:
-            diff_pips = round(((price - entry) if trade_type == "BUY" else (entry - price)) * pip_mult, 1)
-            advice = f"بربح (+{diff_pips} Pip) 🟢" if diff_pips > 0 else f"بخسارة ({diff_pips} Pip) 🔴"
-            msg = f"⏳ **إغلاق زمني (ساعتين):** {symbol} | اخرجوا **{advice}**"
-            active_trades[symbol] = None
-            last_trade_closed_times[symbol] = now
-            return "UPDATE", msg
 
         return None, None
 
@@ -312,7 +310,7 @@ def process_symbol(symbol):
     signal_emoji = "🟢" if trade == "BUY" else "🔴"
     tv_symbol = "OANDA:XAUUSD" if "XAU" in symbol else "FX:EURUSD"
 
-    message = f"""{signal_emoji} **{trade}** ({symbol}) [إشارة SMC فائقة]
+    message = f"""{signal_emoji} **{trade}** ({symbol}) [SMC Smart]
 
 📍 **سعر الدخول:** `{entry:.4f}`
 
@@ -337,7 +335,7 @@ async def send_daily_summary():
 async def main():
     global last_trade_time
 
-    print("🚀 البوت المطور يعمل الآن بنظام SMC الذكي والجلسات الفعالة...", flush=True)
+    print("🚀 البوت يعمل بالنسخة الكاملة مع حماية التأمين الذكي...", flush=True)
 
     last_hourly_report = get_now()
     daily_summary_sent_today = False
@@ -374,7 +372,6 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        # فحص كل 45 ثانية لتغطية اليوم الكامل (24 ساعة) بـ 10 مفاتيح
         await asyncio.sleep(45)
 
 if __name__ == "__main__":
