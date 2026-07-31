@@ -354,7 +354,7 @@ async def main():
             print(f"Loop Error: {e}", flush=True)
 
         # فحص كل 10 ثواني بفضل الـ 10 مفاتيح!
-        await asyncio.sleep(10)
+        await asyncio.sleep(45)
 
 if __name__ == "__main__":
     asyncio.run(main())
