@@ -9,8 +9,27 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-# ⚠️ ضع مفتاح TwelveData الخاص بك هنا
-API_KEY = "d310a47aeca840fb8bb8cf913540c273".strip()
+# ⚠️ ضع المفاتيح الـ 10 هنا بين العلامات
+API_KEYS = [
+    "cf02fa8d0b10466496bfae35bc8e61fc",
+    "cf6fff5cc5b9481e9b66b0b4557be3e0",
+    "5ab47caa0b614f56ba9815778f0024cb",
+    "c365534f82cf41a7a7e72df8fa9c7637",
+    "7b13e064b5f6406e9a98e78777c5ea91",
+    "541bef3becfb4d45a7ead575f147d407",
+    "cc82a74ca22c4b8d8f95f9ab7132b8b9",
+    "6b3970b4f67d4b68a6e26d2b5357373b",
+    "18d552240c38461da8eb89be259b2250",
+    "7d34370b5fbf4160a6b04f07ede97648"
+]
+
+current_key_index = 0
+
+def get_next_api_key():
+    global current_key_index
+    key = API_KEYS[current_key_index].strip()
+    current_key_index = (current_key_index + 1) % len(API_KEYS)
+    return key
 
 # ضبط التوقيت المحلي على بغداد (UTC+3)
 IRAQ_TZ = pytz.timezone("Asia/Baghdad")
@@ -65,11 +84,12 @@ def reset_daily_stats_if_needed():
         }
 
 def fetch_data(symbol, timeframe, outputsize=100):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={API_KEY}"
+    api_key = get_next_api_key()
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
     try:
         res = requests.get(url, timeout=8).json()
         if "values" not in res:
-            print(f"⚠️ API Response Error ({symbol} - {timeframe}): {res}", flush=True)
+            print(f"⚠️ API Error ({symbol} - {timeframe}) مع المفتاح: {res}", flush=True)
             return None
         df = pd.DataFrame(res["values"]).iloc[::-1]
         df["close"] = df["close"].astype(float)
@@ -107,7 +127,6 @@ def detect_smart_signals(df_m5, df_h1):
     recent_high = m5_highs.tail(6).iloc[:-1].max()
     recent_low = m5_lows.tail(6).iloc[:-1].min()
 
-    # شروط كسر الهيكل الكلاسيكية الموثوقة مع اتجاه الـ H1
     bos_bullish = (m5_last_close > recent_high) and (m5_last_close > m5_ema200) and h1_is_uptrend and (rsi < 70)
     bos_bearish = (m5_last_close < recent_low) and (m5_last_close < m5_ema200) and h1_is_downtrend and (rsi > 30)
 
@@ -137,7 +156,7 @@ def process_symbol(symbol):
     now = get_now()
     pip_mult = get_pip_multiplier(symbol)
 
-    print(f"🔍 [تحليل مستقر] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
+    print(f"⚡ [فحص سريع] {symbol} | السعر: {price:.4f} | الوقت: {now.strftime('%H:%M:%S')}", flush=True)
 
     active_trade = active_trades[symbol]
 
@@ -297,7 +316,7 @@ async def send_daily_summary():
 async def main():
     global last_trade_time
 
-    print("🚀 البوت بدأ العمل الآن بالنسخة المستقرة...", flush=True)
+    print("🚀 البوت يعمل الآن بنظام المفاتيح المتعددة والسرعة العالية...", flush=True)
 
     last_hourly_report = get_now()
     daily_summary_sent_today = False
@@ -313,7 +332,7 @@ async def main():
                         parse_mode="Markdown",
                         disable_web_page_preview=False
                     )
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)
 
             now = get_now()
             time_since_last_report = (now - last_hourly_report).total_seconds()
@@ -334,7 +353,8 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(100)
+        # فحص كل 10 ثواني بفضل الـ 10 مفاتيح!
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
