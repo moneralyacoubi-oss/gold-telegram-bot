@@ -11,8 +11,16 @@ bot = Bot(token=BOT_TOKEN)
 
 # المفاتيح الـ 10 الخاصة بك
 API_KEYS = [
-    "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5",
-    "KEY_6", "KEY_7", "KEY_8", "KEY_9", "KEY_10"
+    "cf02fa8d0b10466496bfae35bc8e61fc",
+    "cf6fff5cc5b9481e9b66b0b4557be3e0",
+    "5ab47caa0b614f56ba9815778f0024cb",
+    "7b13e064b5f6406e9a98e78777c5ea91",
+    "c365534f82cf41a7a7e72df8fa9c7637",
+    "541bef3becfb4d45a7ead575f147d407",
+    "cc82a74ca22c4b8d8f95f9ab7132b8b9",
+    "6b3970b4f67d4b68a6e26d2b5357373b",
+    "18d552240c38461da8eb89be259b2250",
+    "7d34370b5fbf4160a6b04f07ede97648"
 ]
 
 current_key_index = 0
