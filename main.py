@@ -36,7 +36,7 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-# إضافة البيتكوين للقائمة
+# الأصول المعتمدة
 SYMBOLS = ["XAU/USD", "EUR/USD", "BTC/USD"]
 
 last_signals = {s: None for s in SYMBOLS}
@@ -53,10 +53,12 @@ daily_stats = {
 }
 
 def is_high_liquidity_session(symbol):
-    """البيتكوين يعمل 24/7 أما الذهب واليورو بداخل أوقات الجلسات"""
-    if "BTC" in symbol:
-        return True
     now = get_now()
+    
+    # 🛑 قفل الويكند: إلغاء الصفقات يومي السبت والأحد لجميع الأصول
+    if now.weekday() in [5, 6]:
+        return False
+
     hour = now.hour
     return 11 <= hour <= 22  # من 11 صباحاً إلى 10 مساءً بتوقيت بغداد
 
@@ -113,7 +115,7 @@ def detect_fvg_ict_signals(df_m5, df_h4):
 
 def get_pip_multiplier(symbol):
     if "BTC" in symbol:
-        return 1.0  # للبيتكوين التغير يحسب بالدولار
+        return 1.0
     elif "XAU" in symbol:
         return 10.0
     else:
@@ -122,6 +124,7 @@ def get_pip_multiplier(symbol):
 def process_symbol(symbol):
     global last_signals, active_trades, last_trade_time, daily_stats, last_trade_closed_times
 
+    # التأكد من جلسة التداول وعدم وجود ويكند
     if not is_high_liquidity_session(symbol):
         return None, None
 
@@ -131,7 +134,7 @@ def process_symbol(symbol):
     if df_m5 is None or df_h4 is None or len(df_m5) < 30 or len(df_h4) < 50:
         return None, None
 
-    # التحقق من أن الشمعة حديثة
+    # التأكد من تحديث الشمعة
     if "datetime" in df_m5.columns:
         last_candle_time = pd.to_datetime(df_m5['datetime'].iloc[-1])
         now_utc = datetime.now(pytz.utc)
@@ -144,7 +147,7 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # --- إدارة الصفقة المفتوحة ---
+    # --- إدارة الصفقات الشغالة ---
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -185,7 +188,7 @@ def process_symbol(symbol):
 
         return None, None
 
-    # الاستراحة بين الصفقات لكل رمز
+    # الاستراحة بين الصفقات
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 30:
         return None, None
@@ -193,9 +196,8 @@ def process_symbol(symbol):
     signals = detect_fvg_ict_signals(df_m5, df_h4)
 
     trade = None
-    # تخصيص مسافة الأمان للستوب حسب الرمز
     if "BTC" in symbol:
-        sl_dist = 120.0  # 120 دولار مسافة أمان لتذبذب البيتكوين
+        sl_dist = 150.0  # مسافة أمان للستوب بالبيتكوين
     elif "XAU" in symbol:
         sl_dist = 0.80
     else:
@@ -257,7 +259,7 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل الخوارزمية للذهب، اليورو، والبيتكوين...", flush=True)
+    print("🚀 جاري تشغيل خوارزمية FVG المفتوحة لأيام الأسبوع فقط (حظر الويكند)...", flush=True)
 
     while True:
         try:
