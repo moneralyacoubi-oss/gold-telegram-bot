@@ -27,7 +27,6 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-# قائمة العملات والأصول (وسّعنا القائمة لتزيد الفرص)
 SYMBOLS = ["XAU/USD", "EUR/USD", "GBP/USD", "USD/JPY", "BTC/USD"]
 
 last_signals = {s: None for s in SYMBOLS}
@@ -47,7 +46,7 @@ def is_high_liquidity_session(symbol):
     if now.weekday() in [5, 6]:  # حظر الويكند
         return False
     hour = now.hour
-    return 10 <= hour <= 23  # جلسة عمل واسعة (لندن + نيويورك)
+    return 10 <= hour <= 23  # جلسة عمل واسعة
 
 def fetch_data(symbol, timeframe, outputsize=100):
     api_key = get_next_api_key()
@@ -64,22 +63,18 @@ def fetch_data(symbol, timeframe, outputsize=100):
         return None
 
 def detect_fvg_ict_signals(df_m5, df_h1):
-    """خوارزمية سريعة ومضبوطة: H1 Bias + M5 FVG Breakout"""
     h1_closes = df_h1["close"]
     h1_ema = h1_closes.ewm(span=30, adjust=False).mean().iloc[-1]
     
-    # اتجاه فريم الساعة H1
     h1_bias = "BULLISH" if h1_closes.iloc[-1] > h1_ema else "BEARISH"
 
     m5_highs = df_m5["high"].values
     m5_lows = df_m5["low"].values
     m5_closes = df_m5["close"].values
 
-    # كشف فجوة FVG
     fvg_bullish = m5_lows[-1] > m5_highs[-3]
     fvg_bearish = m5_highs[-1] < m5_lows[-3]
 
-    # سيولة مرنة (10 شموع سابقة)
     recent_high = max(m5_highs[-10:-2])
     recent_low = min(m5_lows[-10:-2])
 
@@ -89,7 +84,6 @@ def detect_fvg_ict_signals(df_m5, df_h1):
     buy_signal = False
     sell_signal = False
 
-    # شروط دخول مرنة وقوية
     if h1_bias == "BULLISH" and (swept_low or fvg_bullish):
         if m5_closes[-1] > m5_closes[-2]:
             buy_signal = True
@@ -133,7 +127,6 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # متابعة وإغلاق الصفقة الحالية
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -174,7 +167,6 @@ def process_symbol(symbol):
 
         return None, None
 
-    # فترة انتظار 15 دقيقة بين صفقة وأخرى لنفس الزوج
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 15:
         return None, None
@@ -248,7 +240,17 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل الخوارزمية المحدثة (5 أزواج + سرعة لقط الصفقات)...", flush=True)
+    print("🚀 جاري تشغيل الخوارزمية المحدثة...", flush=True)
+
+    # 🟢 رسالة فحص واختبار التليجرام عند التشغيل مباشرة
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text="✅ **تم تشغيل البوت بنجاح!**\nالاتصال بالتليجرام شغال 100% وجاري مراقبة 5 أزواج للفرص.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        print(f"Telegram Test Error: {e}", flush=True)
 
     while True:
         try:
