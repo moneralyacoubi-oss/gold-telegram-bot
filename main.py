@@ -27,26 +27,19 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-SYMBOLS = ["XAU/USD", "EUR/USD", "GBP/USD", "USD/JPY", "BTC/USD"]
+# التركيز على الأصول الأكثر احتراماً للـ ICT
+SYMBOLS = ["XAU/USD", "EUR/USD", "BTC/USD"]
 
 last_signals = {s: None for s in SYMBOLS}
 active_trades = {s: None for s in SYMBOLS}
 last_trade_closed_times = {s: get_now() for s in SYMBOLS}
 
-daily_stats = {
-    "total_trades": 0,
-    "wins": 0,
-    "losses": 0,
-    "total_pips": 0.0,
-    "last_reset_date": get_now().date()
-}
-
-def is_high_liquidity_session(symbol):
+def is_high_liquidity_session():
     now = get_now()
-    if now.weekday() in [5, 6]:  # حظر الويكند
+    if now.weekday() in [5, 6]: # حظر الويكند
         return False
     hour = now.hour
-    return 10 <= hour <= 23  # جلسة عمل واسعة
+    return 11 <= hour <= 22 # ذروة جلسة لندن ونيويورك فقط
 
 def fetch_data(symbol, timeframe, outputsize=100):
     api_key = get_next_api_key()
@@ -62,63 +55,67 @@ def fetch_data(symbol, timeframe, outputsize=100):
     except Exception:
         return None
 
-def detect_fvg_ict_signals(df_m5, df_h1):
+def detect_strict_ict_signals(df_m5, df_h1, symbol):
+    """خوارزمية صارمة: فلترة اتجاه H1 + سحب سيولة حقيقي + FVG مؤكد بشمعة مغلقة"""
     h1_closes = df_h1["close"]
-    h1_ema = h1_closes.ewm(span=30, adjust=False).mean().iloc[-1]
+    h1_ema = h1_closes.ewm(span=50, adjust=False).mean().iloc[-1]
     
+    # اتجاه H1 قوي
     h1_bias = "BULLISH" if h1_closes.iloc[-1] > h1_ema else "BEARISH"
 
     m5_highs = df_m5["high"].values
     m5_lows = df_m5["low"].values
     m5_closes = df_m5["close"].values
+    m5_opens = df_m5["open"].values
 
-    fvg_bullish = m5_lows[-1] > m5_highs[-3]
-    fvg_bearish = m5_highs[-1] < m5_lows[-3]
+    # فحص السيولة لآخر 25 شمعة
+    recent_high = max(m5_highs[-25:-3])
+    recent_low = min(m5_lows[-25:-3])
 
-    recent_high = max(m5_highs[-10:-2])
-    recent_low = min(m5_lows[-10:-2])
+    # شرط إغلاق الشمعة السابقة للتأكيد (Candle Confirmation)
+    prev_closed_bullish = m5_closes[-2] > m5_opens[-2]
+    prev_closed_bearish = m5_closes[-2] < m5_opens[-2]
 
-    swept_low = min(m5_lows[-4:-1]) <= recent_low
-    swept_high = max(m5_highs[-4:-1]) >= recent_high
+    # فجوة FVG واضحة
+    fvg_bullish = m5_lows[-2] > m5_highs[-4]
+    fvg_bearish = m5_highs[-2] < m5_lows[-4]
+
+    # سحب سيولة حقيقي
+    swept_low = min(m5_lows[-5:-2]) < recent_low
+    swept_high = max(m5_highs[-5:-2]) > recent_high
 
     buy_signal = False
     sell_signal = False
 
-    if h1_bias == "BULLISH" and (swept_low or fvg_bullish):
-        if m5_closes[-1] > m5_closes[-2]:
-            buy_signal = True
+    # شروط دخول قاسية ومحفوفة بالأمان
+    if h1_bias == "BULLISH" and swept_low and fvg_bullish and prev_closed_bullish:
+        buy_signal = True
 
-    if h1_bias == "BEARISH" and (swept_high or fvg_bearish):
-        if m5_closes[-1] < m5_closes[-2]:
-            sell_signal = True
+    if h1_bias == "BEARISH" and swept_high and fvg_bearish and prev_closed_bearish:
+        sell_signal = True
 
     return {
         "buy": buy_signal,
         "sell": sell_signal,
-        "sl_buy": min(m5_lows[-4:]),
-        "sl_sell": max(m5_highs[-4:])
+        "sl_buy": min(m5_lows[-6:-1]),
+        "sl_sell": max(m5_highs[-6:-1])
     }
 
 def get_pip_multiplier(symbol):
-    if "BTC" in symbol:
-        return 1.0
-    elif "XAU" in symbol:
-        return 10.0
-    elif "JPY" in symbol:
-        return 100.0
-    else:
-        return 10000.0
+    if "BTC" in symbol: return 1.0
+    elif "XAU" in symbol: return 10.0
+    else: return 10000.0
 
 def process_symbol(symbol):
-    global last_signals, active_trades, daily_stats, last_trade_closed_times
+    global last_signals, active_trades, last_trade_closed_times
 
-    if not is_high_liquidity_session(symbol):
+    if not is_high_liquidity_session():
         return None, None
 
     df_m5 = fetch_data(symbol, "5min", 80)
     df_h1 = fetch_data(symbol, "1h", 60)
 
-    if df_m5 is None or df_h1 is None or len(df_m5) < 20 or len(df_h1) < 30:
+    if df_m5 is None or df_h1 is None or len(df_m5) < 30 or len(df_h1) < 50:
         return None, None
 
     price = float(df_m5["close"].iloc[-1])
@@ -127,6 +124,7 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
+    # إدارة الصفقة الحالية
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -138,50 +136,42 @@ def process_symbol(symbol):
                 pips = round((sl - entry) * pip_mult, 1)
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
-                unit_label = "USD" if "BTC" in symbol else "Pip"
-                return "UPDATE", f"❌ **إغلاق على خسارة (SL)**\n📉 {symbol} | `{pips}` {unit_label}"
+                unit = "USD" if "BTC" in symbol else "Pip"
+                return "UPDATE", f"❌ **إغلاق على خسارة (SL)**\n📉 {symbol} | `{pips}` {unit}"
             elif price >= tp1:
                 pips = round((tp1 - entry) * pip_mult, 1)
-                daily_stats["wins"] += 1
-                daily_stats["total_pips"] += pips
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
-                unit_label = "USD" if "BTC" in symbol else "Pip"
-                return "UPDATE", f"🎯 **تحقق الهدف (TP)!** (+{pips} {unit_label})\n📊 {symbol}"
+                unit = "USD" if "BTC" in symbol else "Pip"
+                return "UPDATE", f"🎯 **تحقق الهدف (TP)!** (+{pips} {unit})\n📊 {symbol}"
 
         elif trade_type == "SELL":
             if price >= sl:
                 pips = round((entry - sl) * pip_mult, 1)
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
-                unit_label = "USD" if "BTC" in symbol else "Pip"
-                return "UPDATE", f"❌ **إغلاق على خسارة (SL)**\n📉 {symbol} | `{pips}` {unit_label}"
+                unit = "USD" if "BTC" in symbol else "Pip"
+                return "UPDATE", f"❌ **إغلاق على خسارة (SL)**\n📉 {symbol} | `{pips}` {unit}"
             elif price <= tp1:
                 pips = round((entry - tp1) * pip_mult, 1)
-                daily_stats["wins"] += 1
-                daily_stats["total_pips"] += pips
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
-                unit_label = "USD" if "BTC" in symbol else "Pip"
-                return "UPDATE", f"🎯 **تحقق الهدف (TP)!** (+{pips} {unit_label})\n📊 {symbol}"
+                unit = "USD" if "BTC" in symbol else "Pip"
+                return "UPDATE", f"🎯 **تحقق الهدف (TP)!** (+{pips} {unit})\n📊 {symbol}"
 
         return None, None
 
+    # فترة انتظار 30 دقيقة بين الصفقات
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
-    if cooldown < 15:
+    if cooldown < 30:
         return None, None
 
-    signals = detect_fvg_ict_signals(df_m5, df_h1)
+    signals = detect_strict_ict_signals(df_m5, df_h1, symbol)
 
-    trade = None
-    if "BTC" in symbol:
-        sl_dist = 120.0
-    elif "XAU" in symbol:
-        sl_dist = 0.70
-    elif "JPY" in symbol:
-        sl_dist = 0.15
-    else:
-        sl_dist = 0.0015
+    # توسيع مسافة الستوب لحمايته من الذبذبة (Buffer)
+    if "BTC" in symbol: sl_dist = 200.0
+    elif "XAU" in symbol: sl_dist = 1.50 # $1.5 حماية للذهب
+    else: sl_dist = 0.0025 # 25 pips لليورو
 
     if signals["buy"]:
         trade = "BUY"
@@ -213,21 +203,10 @@ def process_symbol(symbol):
         "entry_time": now
     }
 
-    daily_stats["total_trades"] += 1
     emoji = "🟢 BUY" if trade == "BUY" else "🔴 SELL"
-    
-    if "BTC" in symbol:
-        tv_symbol = "BINANCE:BTCUSDT"
-    elif "XAU" in symbol:
-        tv_symbol = "OANDA:XAUUSD"
-    elif "GBP" in symbol:
-        tv_symbol = "FX:GBPUSD"
-    elif "JPY" in symbol:
-        tv_symbol = "FX:USDJPY"
-    else:
-        tv_symbol = "FX:EURUSD"
+    tv_symbol = "BINANCE:BTCUSDT" if "BTC" in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "FX:EURUSD")
 
-    message = f"""{emoji} **إشارة جديدة (H1 Bias + FVG Fast)**
+    message = f"""{emoji} **إشارة صارمة (Institutional ICT)**
 
 📌 **الرمز:** `{symbol}`
 📍 **سعر الدخول:** `{entry:.2f}`
@@ -240,13 +219,12 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل الخوارزمية المحدثة...", flush=True)
+    print("🚀 جاري تشغيل الخوارزمية الصارمة المعدلة...", flush=True)
 
-    # 🟢 رسالة فحص واختبار التليجرام عند التشغيل مباشرة
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="✅ **تم تشغيل البوت بنجاح!**\nالاتصال بالتليجرام شغال 100% وجاري مراقبة 5 أزواج للفرص.",
+            text="⚙️ **تم تحديث البوت وإعادة الصرامة:**\nتم تفعيل فحص إغلاق الشموع + توسيع الستوب المحمي + فلترة الذبذبة.",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -268,7 +246,8 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(35)
+        await asyncio.sleep(40)
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
