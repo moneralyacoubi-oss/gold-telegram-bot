@@ -27,7 +27,6 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-# التركيز على الأصول الأكثر احتراماً للـ ICT
 SYMBOLS = ["XAU/USD", "EUR/USD", "BTC/USD"]
 
 last_signals = {s: None for s in SYMBOLS}
@@ -36,10 +35,10 @@ last_trade_closed_times = {s: get_now() for s in SYMBOLS}
 
 def is_high_liquidity_session():
     now = get_now()
-    if now.weekday() in [5, 6]: # حظر الويكند
+    if now.weekday() in [5, 6]:
         return False
     hour = now.hour
-    return 11 <= hour <= 22 # ذروة جلسة لندن ونيويورك فقط
+    return 11 <= hour <= 22
 
 def fetch_data(symbol, timeframe, outputsize=100):
     api_key = get_next_api_key()
@@ -55,50 +54,66 @@ def fetch_data(symbol, timeframe, outputsize=100):
     except Exception:
         return None
 
-def detect_strict_ict_signals(df_m5, df_h1, symbol):
-    """خوارزمية صارمة: فلترة اتجاه H1 + سحب سيولة حقيقي + FVG مؤكد بشمعة مغلقة"""
-    h1_closes = df_h1["close"]
-    h1_ema = h1_closes.ewm(span=50, adjust=False).mean().iloc[-1]
+def calculate_atr(df, period=14):
+    """حساب مؤشر ATR للتذبذب الديناميكي"""
+    df['tr0'] = abs(df['high'] - df['low'])
+    df['tr1'] = abs(df['high'] - df['close'].shift(1))
+    df['tr2'] = abs(df['low'] - df['close'].shift(1))
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+    atr = df['tr'].rolling(window=period).mean().iloc[-1]
+    return atr
+
+def detect_advanced_institutional_signals(df_m5, df_h1, symbol):
+    """خوارزمية مؤسسية V3.0: هيكل H1 + سيولة قوية + ATR ديناميكي + Displacement FVG"""
     
-    # اتجاه H1 قوي
-    h1_bias = "BULLISH" if h1_closes.iloc[-1] > h1_ema else "BEARISH"
+    # 1. هيكل السوق H1 (Market Structure) بدون مؤشرات
+    h1_highs = df_h1["high"].values
+    h1_lows = df_h1["low"].values
+    
+    # اتجاه هيكلي صريح
+    h1_bullish_structure = h1_highs[-1] > h1_highs[-3] and h1_lows[-1] > h1_lows[-3]
+    h1_bearish_structure = h1_highs[-1] < h1_highs[-3] and h1_lows[-1] < h1_lows[-3]
 
     m5_highs = df_m5["high"].values
     m5_lows = df_m5["low"].values
     m5_closes = df_m5["close"].values
     m5_opens = df_m5["open"].values
 
-    # فحص السيولة لآخر 25 شمعة
-    recent_high = max(m5_highs[-25:-3])
-    recent_low = min(m5_lows[-25:-3])
+    # 2. سحب سيولة قوية لـ 50 شمعة (Major Liquidity Sweep)
+    major_high = max(m5_highs[-50:-3])
+    major_low = min(m5_lows[-50:-3])
 
-    # شرط إغلاق الشمعة السابقة للتأكيد (Candle Confirmation)
+    swept_low = min(m5_lows[-4:-1]) < major_low
+    swept_high = max(m5_highs[-4:-1]) > major_high
+
+    # 3. التأكد من إغلاق الشمعة
     prev_closed_bullish = m5_closes[-2] > m5_opens[-2]
     prev_closed_bearish = m5_closes[-2] < m5_opens[-2]
 
-    # فجوة FVG واضحة
-    fvg_bullish = m5_lows[-2] > m5_highs[-4]
-    fvg_bearish = m5_highs[-2] < m5_lows[-4]
-
-    # سحب سيولة حقيقي
-    swept_low = min(m5_lows[-5:-2]) < recent_low
-    swept_high = max(m5_highs[-5:-2]) > recent_high
+    # 4. FVG مع اندفاع قوي (Displacement)
+    fvg_bullish_gap = m5_lows[-2] - m5_highs[-4]
+    fvg_bearish_gap = m5_lows[-4] - m5_highs[-2]
+    
+    # قياس حجم الفجوة بالنسبة للتذبذب
+    atr = calculate_atr(df_m5)
+    valid_fvg_bull = fvg_bullish_gap > (atr * 0.15)
+    valid_fvg_bear = fvg_bearish_gap > (atr * 0.15)
 
     buy_signal = False
     sell_signal = False
 
-    # شروط دخول قاسية ومحفوفة بالأمان
-    if h1_bias == "BULLISH" and swept_low and fvg_bullish and prev_closed_bullish:
+    if h1_bullish_structure and swept_low and valid_fvg_bull and prev_closed_bullish:
         buy_signal = True
 
-    if h1_bias == "BEARISH" and swept_high and fvg_bearish and prev_closed_bearish:
+    if h1_bearish_structure and swept_high and valid_fvg_bear and prev_closed_bearish:
         sell_signal = True
 
     return {
         "buy": buy_signal,
         "sell": sell_signal,
-        "sl_buy": min(m5_lows[-6:-1]),
-        "sl_sell": max(m5_highs[-6:-1])
+        "atr": atr,
+        "sl_buy": min(m5_lows[-5:-1]),
+        "sl_sell": max(m5_highs[-5:-1])
     }
 
 def get_pip_multiplier(symbol):
@@ -112,10 +127,10 @@ def process_symbol(symbol):
     if not is_high_liquidity_session():
         return None, None
 
-    df_m5 = fetch_data(symbol, "5min", 80)
+    df_m5 = fetch_data(symbol, "5min", 100)
     df_h1 = fetch_data(symbol, "1h", 60)
 
-    if df_m5 is None or df_h1 is None or len(df_m5) < 30 or len(df_h1) < 50:
+    if df_m5 is None or df_h1 is None or len(df_m5) < 55 or len(df_h1) < 50:
         return None, None
 
     price = float(df_m5["close"].iloc[-1])
@@ -124,7 +139,7 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # إدارة الصفقة الحالية
+    # متابعة الصفقة
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -161,28 +176,25 @@ def process_symbol(symbol):
 
         return None, None
 
-    # فترة انتظار 30 دقيقة بين الصفقات
+    # فترة انتظار 45 دقيقة بعد الخسارة/الربح
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
-    if cooldown < 30:
+    if cooldown < 45:
         return None, None
 
-    signals = detect_strict_ict_signals(df_m5, df_h1, symbol)
+    signals = detect_advanced_institutional_signals(df_m5, df_h1, symbol)
+    atr = signals["atr"]
 
-    # توسيع مسافة الستوب لحمايته من الذبذبة (Buffer)
-    if "BTC" in symbol: sl_dist = 200.0
-    elif "XAU" in symbol: sl_dist = 1.50 # $1.5 حماية للذهب
-    else: sl_dist = 0.0025 # 25 pips لليورو
-
+    # حساب الستوب والهدف هيدروليكياً باستخدام ATR
     if signals["buy"]:
         trade = "BUY"
-        sl = signals["sl_buy"] - sl_dist
+        sl = signals["sl_buy"] - (atr * 0.5) # ستوب محمي مع ATR
         risk = price - sl
         if risk <= 0: return None, None
         tp1 = price + (risk * 2.0)
 
     elif signals["sell"]:
         trade = "SELL"
-        sl = signals["sl_sell"] + sl_dist
+        sl = signals["sl_sell"] + (atr * 0.5) # ستوب محمي مع ATR
         risk = sl - price
         if risk <= 0: return None, None
         tp1 = price - (risk * 2.0)
@@ -206,25 +218,25 @@ def process_symbol(symbol):
     emoji = "🟢 BUY" if trade == "BUY" else "🔴 SELL"
     tv_symbol = "BINANCE:BTCUSDT" if "BTC" in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "FX:EURUSD")
 
-    message = f"""{emoji} **إشارة صارمة (Institutional ICT)**
+    message = f"""{emoji} **إشارة مؤسسية متقدمة (V3.0)**
 
 📌 **الرمز:** `{symbol}`
 📍 **سعر الدخول:** `{entry:.2f}`
 
 🎯 **الهدف (RR 1:2):** `{tp1:.2f}`
-🛡️ **الستوب المحمي:** `{sl:.2f}`
+🛡️ **الستوب الديناميكي (ATR):** `{sl:.2f}`
 
 📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
 """
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل الخوارزمية الصارمة المعدلة...", flush=True)
+    print("🚀 جاري تشغيل النسخة المؤسسية المتقدمة V3.0...", flush=True)
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚙️ **تم تحديث البوت وإعادة الصرامة:**\nتم تفعيل فحص إغلاق الشموع + توسيع الستوب المحمي + فلترة الذبذبة.",
+            text="🔥 **تم رفع التحديث V3.0 بنجاح:**\nتم تفعيل الستوب الديناميكي (ATR) + الهيكل H1 بدون مؤشرات + تصفية السيولة الكبرى (50 شمعة).",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -250,4 +262,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
