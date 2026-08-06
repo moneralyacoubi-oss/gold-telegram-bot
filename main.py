@@ -27,8 +27,8 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-# توسيع قائمة الأزواج لزيادة الفرص اليومية
-SYMBOLS = ["XAU/USD", "EUR/USD", "GBP/USD", "USD/JPY", "BTC/USD"]
+# تركيز الأزواج للحفاظ على كفاءة الـ API وتجنب الحظر
+SYMBOLS = ["XAU/USD", "GBP/USD", "BTC/USD"]
 
 last_signals = {s: None for s in SYMBOLS}
 active_trades = {s: None for s in SYMBOLS}
@@ -38,8 +38,7 @@ def is_high_liquidity_session():
     now = get_now()
     if now.weekday() in [5, 6]:
         return False
-    hour = now.hour
-    return 10 <= hour <= 23  # تغطية أوسع لجلسات لندن ونيويورك
+    return True # تفعيل التناول على مدار اليوم للجلسات النشطة
 
 def fetch_data(symbol, timeframe, outputsize=100):
     api_key = get_next_api_key()
@@ -62,37 +61,37 @@ def calculate_atr(df, period=14):
     df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
     return df['tr'].rolling(window=period).mean().iloc[-1]
 
-def detect_high_precision_signals(df_tf, df_h1):
-    """خوارزمية الفحص المتقدمة على الفريمات السريعة (M3 / M5)"""
+def detect_responsive_signals(df_tf, df_h1):
+    """شروط مرنة ومتجاوبة للصيد السريع للفرص"""
     h1_highs = df_h1["high"].values
     h1_lows = df_h1["low"].values
     
-    # هيكل H1 الصريح
-    h1_bullish = h1_highs[-1] > h1_highs[-3] and h1_lows[-1] > h1_lows[-3]
-    h1_bearish = h1_highs[-1] < h1_highs[-3] and h1_lows[-1] < h1_lows[-3]
+    # اتجاه H1 مرن
+    h1_bullish = h1_highs[-1] >= h1_lows[-5]
+    h1_bearish = h1_lows[-1] <= h1_highs[-5]
 
     highs = df_tf["high"].values
     lows = df_tf["low"].values
     closes = df_tf["close"].values
     opens = df_tf["open"].values
 
-    # سحب سيولة قمم/قيعان رئيسية لـ 35 شمعة
-    major_high = max(highs[-35:-3])
-    major_low = min(lows[-35:-3])
+    # سحب سيولة آخر 20 شمعة (أسرع بالالتقاط)
+    major_high = max(highs[-20:-2])
+    major_low = min(lows[-20:-2])
 
-    swept_low = min(lows[-3:-1]) < major_low
-    swept_high = max(highs[-3:-1]) > major_high
+    swept_low = min(lows[-3:-1]) <= major_low
+    swept_high = max(highs[-3:-1]) >= major_high
 
     prev_bullish = closes[-2] > opens[-2]
     prev_bearish = closes[-2] < opens[-2]
 
-    # فجوة FVG اندفاعية
+    # فجوة FVG مرنة
     fvg_bull = lows[-2] - highs[-4]
     fvg_bear = lows[-4] - highs[-2]
     
     atr = calculate_atr(df_tf)
-    valid_fvg_bull = fvg_bull > (atr * 0.12)
-    valid_fvg_bear = fvg_bear > (atr * 0.12)
+    valid_fvg_bull = fvg_bull > (atr * 0.05)
+    valid_fvg_bear = fvg_bear > (atr * 0.05)
 
     buy_signal = h1_bullish and swept_low and valid_fvg_bull and prev_bullish
     sell_signal = h1_bearish and swept_high and valid_fvg_bear and prev_bearish
@@ -101,28 +100,22 @@ def detect_high_precision_signals(df_tf, df_h1):
         "buy": buy_signal,
         "sell": sell_signal,
         "atr": atr,
-        "fvg_entry_buy": highs[-4], # مدخل من قمة FVG
-        "fvg_entry_sell": lows[-4], # مدخل من قاع FVG
-        "sl_buy": min(lows[-5:-1]),
-        "sl_sell": max(highs[-5:-1])
+        "sl_buy": min(lows[-4:-1]),
+        "sl_sell": max(highs[-4:-1])
     }
 
 def get_pip_multiplier(symbol):
     if "BTC" in symbol: return 1.0
-    elif "XAU" in symbol or "JPY" in symbol: return 10.0
+    elif "XAU" in symbol: return 10.0
     else: return 10000.0
 
 def process_symbol(symbol):
     global last_signals, active_trades, last_trade_closed_times
 
-    if not is_high_liquidity_session():
-        return None, None
+    df_m3 = fetch_data(symbol, "5min", 60)
+    df_h1 = fetch_data(symbol, "1h", 40)
 
-    # استخدام فريم 3min للالتقاط السريع، مع فريم H1 للاتجاه
-    df_m3 = fetch_data(symbol, "3min", 80)
-    df_h1 = fetch_data(symbol, "1h", 50)
-
-    if df_m3 is None or df_h1 is None or len(df_m3) < 40 or len(df_h1) < 40:
+    if df_m3 is None or df_h1 is None or len(df_m3) < 30 or len(df_h1) < 30:
         return None, None
 
     price = float(df_m3["close"].iloc[-1])
@@ -131,7 +124,6 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # إدارة صفقات مفتوحة
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -168,27 +160,26 @@ def process_symbol(symbol):
 
         return None, None
 
-    # فترة تبريد بين الصفقات (30 دقيقة للزوج الواحد)
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
-    if cooldown < 30:
+    if cooldown < 15: # تقليل التبريد إلى 15 دقيقة زيادة الفرص
         return None, None
 
-    signals = detect_high_precision_signals(df_m3, df_h1)
+    signals = detect_responsive_signals(df_m3, df_h1)
     atr = signals["atr"]
 
     if signals["buy"]:
         trade = "BUY"
-        sl = signals["sl_buy"] - (atr * 0.4)
+        sl = signals["sl_buy"] - (atr * 0.3)
         risk = price - sl
         if risk <= 0: return None, None
-        tp1 = price + (risk * 2.2) # زيادة الريسك ريوارد لـ 1:2.2
+        tp1 = price + (risk * 2.0)
 
     elif signals["sell"]:
         trade = "SELL"
-        sl = signals["sl_sell"] + (atr * 0.4)
+        sl = signals["sl_sell"] + (atr * 0.3)
         risk = sl - price
         if risk <= 0: return None, None
-        tp1 = price - (risk * 2.2)
+        tp1 = price - (risk * 2.0)
     else:
         return None, None
 
@@ -209,25 +200,25 @@ def process_symbol(symbol):
     emoji = "🟢 BUY" if trade == "BUY" else "🔴 SELL"
     tv_symbol = f"FX:{symbol.replace('/', '')}" if "BTC" not in symbol and "XAU" not in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "BINANCE:BTCUSDT")
 
-    message = f"""{emoji} **إشارة مؤسسية دقيقة (V3.5 Multi-Asset)**
+    message = f"""{emoji} **إشارة متجاوبة وسريعة (V3.6)**
 
 📌 **الرمز:** `{symbol}`
 📍 **سعر الدخول:** `{entry:.2f}`
 
-🎯 **الهدف (RR 1:2.2):** `{tp1:.2f}`
-🛡️ **الستوب المرن (ATR):** `{sl:.2f}`
+🎯 **الهدف (RR 1:2):** `{tp1:.2f}`
+🛡️ **الستوب:** `{sl:.2f}`
 
 📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
 """
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل النسخة المتقدمة V3.5 متعددة الأصول...", flush=True)
+    print("🚀 جاري تشغيل النسخة المتجاوبة السريعة V3.6...", flush=True)
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ **تم رفع التحديث V3.5 بنجاح:**\nتم تفعيل فريم الـ 3 دقائق + إضافة الباوند والين (5 أزواج) + زيادة نسبة الربح إلى 1:2.2.",
+            text="⚡ **تم تحديث البوت إلى النسخة V3.6:**\nتم تسريع وتيرة التقاط الصفقات، وتقليل وقت التبريد، وترشيد الأزواج لضمان وصول الإشارات بسرعة.",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -249,7 +240,7 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(30) # فحص كل 30 ثانية لتحديث البيانات أسرع
+        await asyncio.sleep(25)
 
 if __name__ == "__main__":
     asyncio.run(main())
