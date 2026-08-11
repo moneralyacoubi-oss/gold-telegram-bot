@@ -30,7 +30,8 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-SYMBOLS = ["XAU/USD", "GBP/USD", "BTC/USD"]
+# إضافة أزواج متوازنة لضمان توليد 3 صفقات قوية يومياً
+SYMBOLS = ["XAU/USD", "GBP/USD", "BTC/USD", "EUR/USD"]
 
 last_signals = {s: None for s in SYMBOLS}
 active_trades = {s: None for s in SYMBOLS}
@@ -51,39 +52,42 @@ def fetch_data(symbol, timeframe, outputsize=100):
         print(f"API Fetch Error ({symbol}): {e}")
         return None
 
-def find_poi_zones_daily(df_daily):
-    """1. تحليل الفريم اليومي (1D) واستخراج مناطق POI قوية"""
-    if df_daily is None or len(df_daily) < 10:
+def find_poi_zones_intraday(df_h1):
+    """استخراج مناطق POI اليومية السريعة من فريم الساعة H1"""
+    if df_h1 is None or len(df_h1) < 10:
         return None, None
     
-    lows = df_daily['low'].tail(15)
-    highs = df_daily['high'].tail(15)
+    lows = df_h1['low'].tail(12)
+    highs = df_h1['high'].tail(12)
     
-    # نطاق منطقة الطلب ومنطقة العرض اليومية
-    poi_demand = {"low": lows.min(), "high": lows.min() + (df_daily['high'].iloc[-1] - df_daily['low'].iloc[-1]) * 0.25}
-    poi_supply = {"high": highs.max(), "low": highs.max() - (df_daily['high'].iloc[-1] - df_daily['low'].iloc[-1]) * 0.25}
+    poi_demand = {"low": lows.min(), "high": lows.min() + (df_h1['high'].iloc[-1] - df_h1['low'].iloc[-1]) * 0.3}
+    poi_supply = {"high": highs.max(), "low": highs.max() - (df_h1['high'].iloc[-1] - df_h1['low'].iloc[-1]) * 0.3}
     
     return poi_demand, poi_supply
 
 def detect_tail_mitigation(df_m5, poi_demand, poi_supply):
-    """2. الالتقاط بالذيل (Mitigation Check) على فريم المباشر دون انتظار إغلاق الشمعة"""
-    if df_m5 is None or len(df_m5) < 5:
+    """فحص ملامسة الذيل اللحظية للـ POI"""
+    if df_m5 is None or len(df_m5) < 3:
         return None, None
 
     last_low = df_m5['low'].iloc[-1]
     last_high = df_m5['high'].iloc[-1]
     current_price = df_m5['close'].iloc[-1]
 
-    # ملامسة ذيل الشمعة السفلية لـ POI الطلب اليومي
+    # صيد ملامسة الذيل لمنطقة الطلب
     if poi_demand and poi_demand["low"] <= last_low <= poi_demand["high"]:
-        sl = poi_demand["low"] - (poi_demand["high"] - poi_demand["low"]) * 0.1
-        tp = current_price + (current_price - sl) * 2.0  # ريسك ريوارد 1:2
+        sl = poi_demand["low"] - (poi_demand["high"] - poi_demand["low"]) * 0.15
+        risk = current_price - sl
+        if risk <= 0: return None, None
+        tp = current_price + (risk * 1.5)  # target RR 1:1.5
         return "BUY", {"sl": sl, "tp": tp}
 
-    # ملامسة ذيل الشمعة العلوية لـ POI العرض اليومي
+    # صيد ملامسة الذيل لمنطقة العرض
     if poi_supply and poi_supply["low"] <= last_high <= poi_supply["high"]:
-        sl = poi_supply["high"] + (poi_supply["high"] - poi_supply["low"]) * 0.1
-        tp = current_price - (sl - current_price) * 2.0  # ريسك ريوارد 1:2
+        sl = poi_supply["high"] + (poi_supply["high"] - poi_supply["low"]) * 0.15
+        risk = sl - current_price
+        if risk <= 0: return None, None
+        tp = current_price - (risk * 1.5)  # target RR 1:1.5
         return "SELL", {"sl": sl, "tp": tp}
 
     return None, None
@@ -96,11 +100,10 @@ def get_pip_multiplier(symbol):
 def process_symbol(symbol):
     global last_signals, active_trades, last_trade_closed_times
 
-    # جلب بيانات اليومي 1D والـ 5 دقائق M5
-    df_daily = fetch_data(symbol, "1day", 30)
+    df_h1 = fetch_data(symbol, "1h", 30)
     df_m5 = fetch_data(symbol, "5min", 30)
 
-    if df_daily is None or df_m5 is None:
+    if df_h1 is None or df_m5 is None:
         return None, None
 
     price = float(df_m5["close"].iloc[-1])
@@ -109,7 +112,6 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # متابعة وإغلاق الصفقات المفتوحة
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -146,13 +148,12 @@ def process_symbol(symbol):
 
         return None, None
 
-    # فترة تبريد سريعة (دقيقتين)
+    # تبريد دقيقتين فقط لإتاحة المجال لإرسال الصفقات التالية
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 2.0:
         return None, None
 
-    # استخراج الـ POI وفحص الملامسة بالذيل
-    poi_demand, poi_supply = find_poi_zones_daily(df_daily)
+    poi_demand, poi_supply = find_poi_zones_intraday(df_h1)
     trade_type, trade_data = detect_tail_mitigation(df_m5, poi_demand, poi_supply)
 
     if not trade_type:
@@ -183,22 +184,22 @@ def process_symbol(symbol):
 📌 **الرمز:** `{symbol}`
 📍 **سعر الدخول المباشر:** `{entry:.2f}`
 
-🛡️ **الستوب أسفل المنطقة:** `{sl:.2f}`
-🎯 **الهدف (RR 1:2):** `{tp:.2f}`
+🛡️ **الستوب لوس:** `{sl:.2f}`
+🎯 **الهدف (RR 1:1.5):** `{tp:.2f}`
 
-⚡ *تم الالتقاط فور ملامسة ذيل الشمعة لمنطقة الـ POI اليومية.*
+⚡ *تم الالتقاط بالذيل على مناطق السيولة اليومية (H1 POI).*
 
 📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
 """
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل نسخة صيد الذيل والـ POI اليومي V4.0...", flush=True)
+    print("🚀 جاري تشغيل نسخة الـ 3 صفقات اليومية V4.2...", flush=True)
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ **تم تحديث البوت إلى النسخة V4.0 (إعادة التعيين):**\n1. فحص الفريم اليومي 1D لمناطق POI.\n2. اقتناص الملامسة بالذيل فوراً بدون انتظار إغلاق الشمعة.\n3. صيد سريع ومباشر للتلجرام.",
+            text="⚡ **تم تحديث البوت إلى النسخة V4.2 (3 صفقات يومياً):**\n1. فحص مناطق POI على فريم H1 لزيادة الفرص.\n2. اقتناص بالذيل فوراً بدون انتظار الإغلاق.\n3. أهداف سريعة تناسب تداول اليوم الواحد.",
             parse_mode="Markdown"
         )
     except Exception as e:
