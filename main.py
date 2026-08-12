@@ -30,14 +30,17 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-# إضافة أزواج سريعة ومتحركة لزيادة الصفقات اليومية
-SYMBOLS = ["XAU/USD", "GBP/USD", "BTC/USD", "EUR/USD", "GBP/JPY"]
+# قائمة شاملة لأقوى وأسرع الأزواج حركة بالسيولة
+SYMBOLS = [
+    "XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", 
+    "GBP/JPY", "EUR/JPY", "AUD/USD", "USD/JPY"
+]
 
 last_signals = {s: None for s in SYMBOLS}
 active_trades = {s: None for s in SYMBOLS}
 last_trade_closed_times = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
-def fetch_data(symbol, timeframe, outputsize=100):
+def fetch_data(symbol, timeframe, outputsize=80):
     api_key = get_next_api_key()
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
     try:
@@ -52,53 +55,50 @@ def fetch_data(symbol, timeframe, outputsize=100):
         print(f"API Fetch Error ({symbol}): {e}")
         return None
 
-def calculate_ema(df, period=30):
-    """EMA30 على M15 لتحديد الاتجاه اللحظي السريع"""
+def calculate_ema(df, period=50):
     return df['close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
-def find_poi_zones_fast(df_m15):
-    """استخراج مناطق POI سريعة من فريم المربعات M15"""
-    if df_m15 is None or len(df_m15) < 12:
+def find_poi_zones(df_h1):
+    """استخراج مناطق العرض والطلب POI من فريم H1"""
+    if df_h1 is None or len(df_h1) < 15:
         return None, None
     
-    lows = df_m15['low'].tail(12)
-    highs = df_m15['high'].tail(12)
+    lows = df_h1['low'].tail(15)
+    highs = df_h1['high'].tail(15)
     
-    poi_demand = {"low": lows.min(), "high": lows.min() + (df_m15['high'].iloc[-1] - df_m15['low'].iloc[-1]) * 0.3}
-    poi_supply = {"high": highs.max(), "low": highs.max() - (df_m15['high'].iloc[-1] - df_m15['low'].iloc[-1]) * 0.3}
+    poi_demand = {"low": lows.min(), "high": lows.min() + (df_h1['high'].iloc[-1] - df_h1['low'].iloc[-1]) * 0.35}
+    poi_supply = {"high": highs.max(), "low": highs.max() - (df_h1['high'].iloc[-1] - df_h1['low'].iloc[-1]) * 0.35}
     
     return poi_demand, poi_supply
 
-def detect_fast_accurate_signal(df_m5, df_m15, poi_demand, poi_supply):
-    """فحص الصفقات السريعة بتأكيد قوي مع الاتجاه"""
-    if df_m5 is None or len(df_m5) < 3 or df_m15 is None:
+def detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply):
+    if df_m5 is None or len(df_m5) < 5 or df_h1 is None:
         return None, None
 
-    ema30_m15 = calculate_ema(df_m15, 30)
+    ema50_h1 = calculate_ema(df_h1, 50)
     current_price = df_m5['close'].iloc[-1]
     last_low = df_m5['low'].iloc[-1]
     last_high = df_m5['high'].iloc[-1]
     
-    # تأكيد شمعة انعكاسية بسيطة
     is_bullish = df_m5['close'].iloc[-1] > df_m5['open'].iloc[-1]
     is_bearish = df_m5['close'].iloc[-1] < df_m5['open'].iloc[-1]
 
-    # صفقة شراء سريعة
+    # شرط الشراء: ملامسة مناطق الطلب + الاتجاه صاعد على H1 + شمعة صاعدة
     if poi_demand and poi_demand["low"] <= last_low <= poi_demand["high"]:
-        if current_price >= ema30_m15 and is_bullish:
+        if current_price > ema50_h1 and is_bullish:
             sl = poi_demand["low"] - (poi_demand["high"] - poi_demand["low"]) * 0.15
             risk = current_price - sl
             if risk <= 0: return None, None
-            tp = current_price + (risk * 1.3)  # هدف سريع وخاطف لضمان التحقق
+            tp = current_price + (risk * 1.5)
             return "BUY", {"sl": sl, "tp": tp}
 
-    # صفقة بيع سريعة
+    # شرط البيع: ملامسة مناطق العرض + الاتجاه هابط على H1 + شمعة هابطة
     if poi_supply and poi_supply["low"] <= last_high <= poi_supply["high"]:
-        if current_price <= ema30_m15 and is_bearish:
+        if current_price < ema50_h1 and is_bearish:
             sl = poi_supply["high"] + (poi_supply["high"] - poi_supply["low"]) * 0.15
             risk = sl - current_price
             if risk <= 0: return None, None
-            tp = current_price - (risk * 1.3)  # هدف سريع وخاطف لضمان التحقق
+            tp = current_price - (risk * 1.5)
             return "SELL", {"sl": sl, "tp": tp}
 
     return None, None
@@ -106,15 +106,16 @@ def detect_fast_accurate_signal(df_m5, df_m15, poi_demand, poi_supply):
 def get_pip_multiplier(symbol):
     if "BTC" in symbol: return 1.0
     elif "XAU" in symbol: return 10.0
+    elif "JPY" in symbol: return 100.0
     else: return 10000.0
 
 def process_symbol(symbol):
     global last_signals, active_trades, last_trade_closed_times
 
-    df_m15 = fetch_data(symbol, "15min", 40)
-    df_m5 = fetch_data(symbol, "5min", 30)
+    df_h1 = fetch_data(symbol, "1h", 60)
+    df_m5 = fetch_data(symbol, "5min", 40)
 
-    if df_m15 is None or df_m5 is None:
+    if df_h1 is None or df_m5 is None:
         return None, None
 
     price = float(df_m5["close"].iloc[-1])
@@ -159,13 +160,13 @@ def process_symbol(symbol):
 
         return None, None
 
-    # تبريد دقيقة واحدة فقط لإفساح المجال لفرص يومية متكررة
+    # فترة تبريد 3 دقائق بين الصفقات للزوج الواحد
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
-    if cooldown < 1.0:
+    if cooldown < 3.0:
         return None, None
 
-    poi_demand, poi_supply = find_poi_zones_fast(df_m15)
-    trade_type, trade_data = detect_fast_accurate_signal(df_m5, df_m15, poi_demand, poi_supply)
+    poi_demand, poi_supply = find_poi_zones(df_h1)
+    trade_type, trade_data = detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply)
 
     if not trade_type:
         return None, None
@@ -187,7 +188,7 @@ def process_symbol(symbol):
         "entry_time": now
     }
 
-    emoji = "🟢 BUY (سكالبينج يومي سريع)" if trade_type == "BUY" else "🔴 SELL (سكالبينج يومي سريع)"
+    emoji = "🟢 BUY (منطقة سيولة عالية الدقة)" if trade_type == "BUY" else "🔴 SELL (منطقة سيولة عالية الدقة)"
     tv_symbol = f"FX:{symbol.replace('/', '')}" if "BTC" not in symbol and "XAU" not in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "BINANCE:BTCUSDT")
 
     message = f"""{emoji}
@@ -195,22 +196,22 @@ def process_symbol(symbol):
 📌 **الرمز:** `{symbol}`
 📍 **سعر الدخول:** `{entry:.2f}`
 
-🎯 **الهدف السريع (TP):** `{tp:.2f}`
+🎯 **الهدف (TP):** `{tp:.2f}`
 🛡️ **الستوب (SL):** `{sl:.2f}`
 
-⚡ *تأكيد سريع على M15 لتحقيق أهداف يومية مضمونة.*
+✨ *توافق الاتجاه العام H1 مع منطقة POI حقيقية.*
 
 📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
 """
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل نسخة السكالبينج اليومية السريعة V5.5...", flush=True)
+    print("🚀 جاري تشغيل النسخة الاحترافية المجمعة...", flush=True)
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚡ **تم تحديث البوت إلى النسخة V5.5 (سريع ومضمون اليوم):**\n1. التحويل لفريم M15 لزيادة الصفقات اليومية.\n2. تقليل الأهداف (RR 1:1.3) لضمان تحقيق الـ TP بسرعة.\n3. تبريد دقيقة واحدة لخلق فرص مستمرة.",
+            text="🔥 **تم تشغيل النسخة الذكية الاحترافية:**\n1. مراقبة 8 أزواج حركة سريعة لضمان كثرة الصفقات.\n2. التداول حصراً مع الاتجاه ومناطق الـ POI.\n3. أهداف محسوبة بدقة لضمان الربح.",
             parse_mode="Markdown"
         )
     except Exception as e:
