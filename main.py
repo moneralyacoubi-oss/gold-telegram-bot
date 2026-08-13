@@ -12,7 +12,7 @@ from config import BOT_TOKEN, CHAT_ID
 request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
 bot = Bot(token=BOT_TOKEN, request=request)
 
-# قائمة المفاتيح الـ 15
+# قائمة المفاتيح الـ 15 المعتمدة
 API_KEYS = [
     "C8229f7582f645b5a6cb09e6e4490002",
     "ba9b9b464937486f953d12278ffc0c54",
@@ -253,9 +253,9 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل النسخة المحدثة مع المفاتيح الـ 15...", flush=True)
+    print("🚀 جاري تشغيل النسخة الموزونة (24 ساعة بدون انقطاع)...", flush=True)
 
-    await send_telegram_msg("⚙️ **تم تشغيل البوت بنجاح باستعمال المفاتيح الـ 15 الجديدة.**")
+    await send_telegram_msg("⚙️ **تم تشغيل البوت بنجاح! ميزانية المفاتيح مضبوطة لـ 24 ساعة متواصلة.**")
 
     loop_count = 0
 
@@ -265,17 +265,18 @@ async def main():
                 status, msg = process_symbol(symbol)
                 if msg:
                     await send_telegram_msg(msg)
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1.2)
 
             loop_count += 1
-            if loop_count >= 60:
+            if loop_count >= 30:  # إرسال تأكيد كل 30 دقيقة
                 await send_telegram_msg("📡 **السكربت شغال ويراقب الأزواج الثمانية بنجاح.**")
                 loop_count = 0
 
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(30)
+        # الانتظار 60 ثانية بين كل دورة فحص لضمان استمرار الـ 15 مفتاح طوال الـ 24 ساعة
+        await asyncio.sleep(60)
 
 if __name__ == "__main__":
     asyncio.run(main())
