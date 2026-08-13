@@ -4,26 +4,42 @@ import requests
 import pandas as pd
 import pytz
 from telegram import Bot
+from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-bot = Bot(token=BOT_TOKEN)
+# تهيئة الاتصال بالتلجرام مع تمديد مهلة الانتظار لمنع التوقف
+request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
+bot = Bot(token=BOT_TOKEN, request=request)
 
-# مفاتيح API لتدوير الاستهلاك
+# قائمة المفاتيح الـ 15
 API_KEYS = [
-    "cf02fa8d0b10466496bfae35bc8e61fc", "cf6fff5cc5b9481e9b66b0b4557be3e0", 
-    "5ab47caa0b614f56ba9815778f0024cb", "c365534f82cf41a7a7e72df8fa9c7637", 
-    "7b13e064b5f6406e9a98e78777c5ea91", "541bef3becfb4d45a7ead575f147d407", 
-    "cc82a74ca22c4b8d8f95f9ab7132b8b9", "6b3970b4f67d4b68a6e26d2b5357373b", 
-    "18d552240c38461da8eb89be259b2250", "7d34370b5fbf4160a6b04f07ede97648"
+    "C8229f7582f645b5a6cb09e6e4490002",
+    "ba9b9b464937486f953d12278ffc0c54",
+    "3aa16ae3bc7d44f28cbf629508c020bf",
+    "69b9cd8250344066a54be4108225f849",
+    "76a7b6f10798424385db93fe18a56e76",
+    "59d7ff4537d846298cc50992950f0082",
+    "ff6c85b0a3f14866938d4c43865ce1df",
+    "10cbf9b6f30043eb96e3ad2a89063f5f",
+    "d3bf745e06f74947a25b2175df9fe178",
+    "406452df893f4375a2a79d156f5f66d6",
+    "ccfdfdefbd434defaaec9d853680065d",
+    "d29ef2928aae41f2b96fcb7ba8b27f3b",
+    "ee4ead027117474e8d53a120c8aeb5e5",
+    "1edb7d5da95b446dba1a97faf74803eb",
+    "56f1f5c2abea4989853d20a452f2dce9"
 ]
 
+active_keys = list(API_KEYS)
 current_key_index = 0
 
 def get_next_api_key():
-    global current_key_index
-    key = API_KEYS[current_key_index].strip()
-    current_key_index = (current_key_index + 1) % len(API_KEYS)
+    global current_key_index, active_keys
+    if not active_keys:
+        return None
+    key = active_keys[current_key_index % len(active_keys)].strip()
+    current_key_index = (current_key_index + 1) % len(active_keys)
     return key
 
 IRAQ_TZ = pytz.timezone("Asia/Baghdad")
@@ -43,21 +59,39 @@ last_trade_closed_times = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMB
 poi_cache = {}
 last_h1_fetch = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
+async def send_telegram_msg(text):
+    """إرسال آمن لرسائل التلجرام بدون توقف عند أخطاء الشبكة"""
+    try:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=text,
+            parse_mode="Markdown",
+            disable_web_page_preview=False
+        )
+    except Exception as e:
+        print(f"Telegram Send Error: {e}", flush=True)
+
 def fetch_data(symbol, timeframe, outputsize=80, retries=3):
-    """جلب البيانات مع نظام المحاولات وزيادة المهلة لحل مشكلة Timeout"""
+    """جلب البيانات مع الحظر التلقائي للمفتاح المنتهي"""
+    global active_keys
     for attempt in range(retries):
         api_key = get_next_api_key()
+        if not api_key:
+            print("❌ جميع مفاتيح الـ API استُهلكت بالكامل!", flush=True)
+            return None
+
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
         try:
-            # رفع مهلة الانتظار إلى 15 ثانية لتفادي انقطاع الاتصال
-            res = requests.get(url, timeout=15).json()
+            res = requests.get(url, timeout=12).json()
             if "values" in res:
                 df = pd.DataFrame(res["values"]).iloc[::-1].reset_index(drop=True)
                 for col in ["open", "high", "low", "close"]:
                     df[col] = df[col].astype(float)
                 return df
-            elif "message" in res:
-                print(f"API Warning ({symbol}): {res['message']}", flush=True)
+            elif "message" in res and "run out" in res["message"]:
+                print(f"⚠️ المفتاح {api_key[:6]}... انتهى حده اليومي، تم التجاوز.", flush=True)
+                if api_key in active_keys:
+                    active_keys.remove(api_key)
         except Exception as e:
             print(f"API Fetch Retry {attempt + 1}/{retries} ({symbol}): {e}", flush=True)
             
@@ -219,16 +253,9 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل النسخة المستقرة لمعالجة المهلة...", flush=True)
+    print("🚀 جاري تشغيل النسخة المحدثة مع المفاتيح الـ 15...", flush=True)
 
-    try:
-        await bot.send_message(
-            chat_id=CHAT_ID,
-            text="⚙️ **تم إصلاح مشكلة المهلة (Timeout) والسكربت شغال بانتظام الآن.**",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        print(f"Telegram Test Error: {e}", flush=True)
+    await send_telegram_msg("⚙️ **تم تشغيل البوت بنجاح باستعمال المفاتيح الـ 15 الجديدة.**")
 
     loop_count = 0
 
@@ -237,28 +264,18 @@ async def main():
             for symbol in SYMBOLS:
                 status, msg = process_symbol(symbol)
                 if msg:
-                    await bot.send_message(
-                        chat_id=CHAT_ID,
-                        text=msg,
-                        parse_mode="Markdown",
-                        disable_web_page_preview=False
-                    )
-                # مهلة ثانية واحدة لمنع ازدحام الطلبات على Railway
-                await asyncio.sleep(1.0)
+                    await send_telegram_msg(msg)
+                await asyncio.sleep(1.5)
 
             loop_count += 1
-            if loop_count >= 150:
-                await bot.send_message(
-                    chat_id=CHAT_ID,
-                    text="📡 **السكربت شغال ويراقب الأزواج الثمانية بنجاح.**",
-                    parse_mode="Markdown"
-                )
+            if loop_count >= 60:
+                await send_telegram_msg("📡 **السكربت شغال ويراقب الأزواج الثمانية بنجاح.**")
                 loop_count = 0
 
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(4)
+        await asyncio.sleep(30)
 
 if __name__ == "__main__":
     asyncio.run(main())
