@@ -9,6 +9,7 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
+# مفاتيح API لتدوير الاستهلاك
 API_KEYS = [
     "cf02fa8d0b10466496bfae35bc8e61fc", "cf6fff5cc5b9481e9b66b0b4557be3e0", 
     "5ab47caa0b614f56ba9815778f0024cb", "c365534f82cf41a7a7e72df8fa9c7637", 
@@ -42,20 +43,25 @@ last_trade_closed_times = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMB
 poi_cache = {}
 last_h1_fetch = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
-def fetch_data(symbol, timeframe, outputsize=80):
-    api_key = get_next_api_key()
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
-    try:
-        res = requests.get(url, timeout=8).json()
-        if "values" not in res:
-            return None
-        df = pd.DataFrame(res["values"]).iloc[::-1].reset_index(drop=True)
-        for col in ["open", "high", "low", "close"]:
-            df[col] = df[col].astype(float)
-        return df
-    except Exception as e:
-        print(f"API Fetch Error ({symbol}): {e}")
-        return None
+def fetch_data(symbol, timeframe, outputsize=80, retries=3):
+    """جلب البيانات مع نظام المحاولات وزيادة المهلة لحل مشكلة Timeout"""
+    for attempt in range(retries):
+        api_key = get_next_api_key()
+        url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
+        try:
+            # رفع مهلة الانتظار إلى 15 ثانية لتفادي انقطاع الاتصال
+            res = requests.get(url, timeout=15).json()
+            if "values" in res:
+                df = pd.DataFrame(res["values"]).iloc[::-1].reset_index(drop=True)
+                for col in ["open", "high", "low", "close"]:
+                    df[col] = df[col].astype(float)
+                return df
+            elif "message" in res:
+                print(f"API Warning ({symbol}): {res['message']}", flush=True)
+        except Exception as e:
+            print(f"API Fetch Retry {attempt + 1}/{retries} ({symbol}): {e}", flush=True)
+            
+    return None
 
 def calculate_ema(df, period=50):
     return df['close'].ewm(span=period, adjust=False).mean().iloc[-1]
@@ -64,13 +70,11 @@ def find_poi_zones(df_h1):
     if df_h1 is None or len(df_h1) < 20:
         return None, None
     
-    # حساب نطاق القمم والقيعان بأرجوحة أوسع (Swing High / Swing Low)
     lows = df_h1['low'].tail(20)
     highs = df_h1['high'].tail(20)
     
     range_span = highs.max() - lows.min()
     
-    # زيادة سمك المنطقة لضمان عدم ضياع الفرص
     poi_demand = {"low": lows.min(), "high": lows.min() + (range_span * 0.18)}
     poi_supply = {"high": highs.max(), "low": highs.max() - (range_span * 0.18)}
     
@@ -85,16 +89,14 @@ def detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply):
     last_low = df_m5['low'].iloc[-1]
     last_high = df_m5['high'].iloc[-1]
 
-    # شرط شراء مرن ومتقن عند ملامسة منطقة الطلب
     if poi_demand and (last_low <= poi_demand["high"] and current_price >= poi_demand["low"]):
-        if current_price > (ema50_h1 * 0.998): # سماحية بسيطة مع الاتجاه
+        if current_price > (ema50_h1 * 0.998):
             sl = poi_demand["low"] - (poi_demand["high"] - poi_demand["low"]) * 0.2
             risk = current_price - sl
             if risk <= 0: return None, None
             tp = current_price + (risk * 1.5)
             return "BUY", {"sl": sl, "tp": tp}
 
-    # شرط بيع مرن ومتقن عند ملامسة منطقة العرض
     if poi_supply and (last_high >= poi_supply["low"] and current_price <= poi_supply["high"]):
         if current_price < (ema50_h1 * 1.002):
             sl = poi_supply["high"] + (poi_supply["high"] - poi_supply["low"]) * 0.2
@@ -217,12 +219,12 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل النسخة المحدثة المرنة...", flush=True)
+    print("🚀 جاري تشغيل النسخة المستقرة لمعالجة المهلة...", flush=True)
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="⚙️ **تم تحديث السكربت بنطاق سيولة مرن + مراقبة حية مستمرة.**",
+            text="⚙️ **تم إصلاح مشكلة المهلة (Timeout) والسكربت شغال بانتظام الآن.**",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -241,11 +243,11 @@ async def main():
                         parse_mode="Markdown",
                         disable_web_page_preview=False
                     )
-                await asyncio.sleep(0.5)
+                # مهلة ثانية واحدة لمنع ازدحام الطلبات على Railway
+                await asyncio.sleep(1.0)
 
             loop_count += 1
-            # إرسال نبضة تأكيد كل 30 دقيقة لضمان أن السكربت يع يعمل دون مشاكل
-            if loop_count >= 300:
+            if loop_count >= 150:
                 await bot.send_message(
                     chat_id=CHAT_ID,
                     text="📡 **السكربت شغال ويراقب الأزواج الثمانية بنجاح.**",
@@ -256,7 +258,7 @@ async def main():
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(3)
+        await asyncio.sleep(4)
 
 if __name__ == "__main__":
     asyncio.run(main())
