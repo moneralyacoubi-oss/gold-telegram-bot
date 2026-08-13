@@ -9,7 +9,6 @@ from config import BOT_TOKEN, CHAT_ID
 
 bot = Bot(token=BOT_TOKEN)
 
-# قائمة مفاتيح الـ API لتدوير الاستهلاك
 API_KEYS = [
     "cf02fa8d0b10466496bfae35bc8e61fc", "cf6fff5cc5b9481e9b66b0b4557be3e0", 
     "5ab47caa0b614f56ba9815778f0024cb", "c365534f82cf41a7a7e72df8fa9c7637", 
@@ -31,7 +30,6 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
-# قائمة شاملة لأقوى وأسرع الأزواج حركة بالسيولة
 SYMBOLS = [
     "XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", 
     "GBP/JPY", "EUR/JPY", "AUD/USD", "USD/JPY"
@@ -41,7 +39,6 @@ last_signals = {s: None for s in SYMBOLS}
 active_trades = {s: None for s in SYMBOLS}
 last_trade_closed_times = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
-# نظام التخزين المؤقت لتوفير طلبات الـ API للحفاظ على السرعة والاستقرار 24 ساعة
 poi_cache = {}
 last_h1_fetch = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
@@ -64,15 +61,18 @@ def calculate_ema(df, period=50):
     return df['close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
 def find_poi_zones(df_h1):
-    """استخراج مناطق العرض والطلب POI من فريم H1"""
-    if df_h1 is None or len(df_h1) < 15:
+    if df_h1 is None or len(df_h1) < 20:
         return None, None
     
-    lows = df_h1['low'].tail(15)
-    highs = df_h1['high'].tail(15)
+    # حساب نطاق القمم والقيعان بأرجوحة أوسع (Swing High / Swing Low)
+    lows = df_h1['low'].tail(20)
+    highs = df_h1['high'].tail(20)
     
-    poi_demand = {"low": lows.min(), "high": lows.min() + (df_h1['high'].iloc[-1] - df_h1['low'].iloc[-1]) * 0.35}
-    poi_supply = {"high": highs.max(), "low": highs.max() - (df_h1['high'].iloc[-1] - df_h1['low'].iloc[-1]) * 0.35}
+    range_span = highs.max() - lows.min()
+    
+    # زيادة سمك المنطقة لضمان عدم ضياع الفرص
+    poi_demand = {"low": lows.min(), "high": lows.min() + (range_span * 0.18)}
+    poi_supply = {"high": highs.max(), "low": highs.max() - (range_span * 0.18)}
     
     return poi_demand, poi_supply
 
@@ -84,23 +84,20 @@ def detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply):
     current_price = df_m5['close'].iloc[-1]
     last_low = df_m5['low'].iloc[-1]
     last_high = df_m5['high'].iloc[-1]
-    
-    is_bullish = df_m5['close'].iloc[-1] > df_m5['open'].iloc[-1]
-    is_bearish = df_m5['close'].iloc[-1] < df_m5['open'].iloc[-1]
 
-    # شرط الشراء: ملامسة مناطق الطلب + الاتجاه صاعد على H1 + شمعة صاعدة
-    if poi_demand and poi_demand["low"] <= last_low <= poi_demand["high"]:
-        if current_price > ema50_h1 and is_bullish:
-            sl = poi_demand["low"] - (poi_demand["high"] - poi_demand["low"]) * 0.15
+    # شرط شراء مرن ومتقن عند ملامسة منطقة الطلب
+    if poi_demand and (last_low <= poi_demand["high"] and current_price >= poi_demand["low"]):
+        if current_price > (ema50_h1 * 0.998): # سماحية بسيطة مع الاتجاه
+            sl = poi_demand["low"] - (poi_demand["high"] - poi_demand["low"]) * 0.2
             risk = current_price - sl
             if risk <= 0: return None, None
             tp = current_price + (risk * 1.5)
             return "BUY", {"sl": sl, "tp": tp}
 
-    # شرط البيع: ملامسة مناطق العرض + الاتجاه هابط على H1 + شمعة هابطة
-    if poi_supply and poi_supply["low"] <= last_high <= poi_supply["high"]:
-        if current_price < ema50_h1 and is_bearish:
-            sl = poi_supply["high"] + (poi_supply["high"] - poi_supply["low"]) * 0.15
+    # شرط بيع مرن ومتقن عند ملامسة منطقة العرض
+    if poi_supply and (last_high >= poi_supply["low"] and current_price <= poi_supply["high"]):
+        if current_price < (ema50_h1 * 1.002):
+            sl = poi_supply["high"] + (poi_supply["high"] - poi_supply["low"]) * 0.2
             risk = sl - current_price
             if risk <= 0: return None, None
             tp = current_price - (risk * 1.5)
@@ -119,7 +116,6 @@ def process_symbol(symbol):
 
     now = get_now()
 
-    # تحديث مناطق H1 مرة واحدة كل 30 دقيقة فقط لتقليل الاستهلاك وحفظ الطاقة
     if symbol not in poi_cache or (now - last_h1_fetch[symbol]).total_seconds() > 1800:
         df_h1 = fetch_data(symbol, "1h", 60)
         if df_h1 is not None:
@@ -132,7 +128,6 @@ def process_symbol(symbol):
 
     poi_demand, poi_supply, df_h1 = poi_cache[symbol]
 
-    # جلب حركة M5 السريعة والمباشرة
     df_m5 = fetch_data(symbol, "5min", 30)
     if df_m5 is None:
         return None, None
@@ -142,7 +137,6 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # إدارة الصفقات المفتوحة وحساب النقاط عند الإغلاق
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -179,7 +173,6 @@ def process_symbol(symbol):
 
         return None, None
 
-    # فترة تبريد 3 دقائق للزوج بعد إغلاق الصفقة
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 3.0:
         return None, None
@@ -206,7 +199,7 @@ def process_symbol(symbol):
         "entry_time": now
     }
 
-    emoji = "🟢 BUY (منطقة سيولة عالية الدقة)" if trade_type == "BUY" else "🔴 SELL (منطقة سيولة عالية الدقة)"
+    emoji = "🟢 BUY (منطقة سيولة POI)" if trade_type == "BUY" else "🔴 SELL (منطقة سيولة POI)"
     tv_symbol = f"FX:{symbol.replace('/', '')}" if "BTC" not in symbol and "XAU" not in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "BINANCE:BTCUSDT")
 
     message = f"""{emoji}
@@ -217,23 +210,25 @@ def process_symbol(symbol):
 🎯 **الهدف (TP):** `{tp:.2f}`
 🛡️ **الستوب (SL):** `{sl:.2f}`
 
-✨ *توافق الاتجاه العام H1 مع منطقة POI حقيقية.*
+✨ *توافق الاتجاه العام H1 مع منطقة POI.*
 
 📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
 """
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل النسخة الاحترافية فائقة السرعة...", flush=True)
+    print("🚀 جاري تشغيل النسخة المحدثة المرنة...", flush=True)
 
     try:
         await bot.send_message(
             chat_id=CHAT_ID,
-            text="🔥 **تم تشغيل النسخة الذكية الاحترافية:**\n1. مراقبة 8 أزواج حركة سريعة لضمان كثرة الصفقات.\n2. سرعة مسح فائقة (كل 3 ثوانٍ).\n3. حماية متكاملة للـ API لتشغيل مستمر 24 ساعة.",
+            text="⚙️ **تم تحديث السكربت بنطاق سيولة مرن + مراقبة حية مستمرة.**",
             parse_mode="Markdown"
         )
     except Exception as e:
         print(f"Telegram Test Error: {e}", flush=True)
+
+    loop_count = 0
 
     while True:
         try:
@@ -248,10 +243,19 @@ async def main():
                     )
                 await asyncio.sleep(0.5)
 
+            loop_count += 1
+            # إرسال نبضة تأكيد كل 30 دقيقة لضمان أن السكربت يع يعمل دون مشاكل
+            if loop_count >= 300:
+                await bot.send_message(
+                    chat_id=CHAT_ID,
+                    text="📡 **السكربت شغال ويراقب الأزواج الثمانية بنجاح.**",
+                    parse_mode="Markdown"
+                )
+                loop_count = 0
+
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        # انتظار 3 ثوانٍ فقط بين كل دورة كاملة للحفاظ على سرعة الاستجابة الخاطفة
         await asyncio.sleep(3)
 
 if __name__ == "__main__":
