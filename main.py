@@ -8,11 +8,9 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-# تهيئة الاتصال بالتلجرام مع تمديد مهلة الانتظار لمنع التوقف
 request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
 bot = Bot(token=BOT_TOKEN, request=request)
 
-# قائمة المفاتيح الـ 15 الخاصة بك بالكامل
 API_KEYS = [
     "C8229f7582f645b5a6cb09e6e4490002",
     "ba9b9b464937486f953d12278ffc0c54",
@@ -70,28 +68,32 @@ async def send_telegram_msg(text):
     except Exception as e:
         print(f"Telegram Send Error: {e}", flush=True)
 
-def fetch_data(symbol, timeframe, outputsize=80, retries=3):
-    """جلب البيانات مع معالجة ذكية ومضمونة لأخطاء الاتصال والـ JSON"""
+def fetch_data(symbol, timeframe, outputsize=80, retries=5):
+    """جلب البيانات مع فلترة المفاتيح المرفوضة 401 تلقائياً"""
     global active_keys
     for attempt in range(retries):
         api_key = get_next_api_key()
         if not api_key:
-            print("❌ جميع مفاتيح الـ API مستهلكة حالياً!", flush=True)
+            print("❌ جميع المفاتيح استُهلكت أو غير صالحة!", flush=True)
             return None
 
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
         try:
             res_raw = requests.get(url, timeout=12)
             
-            # فحص إذا كان الرد فارغاً أو ليس JSON
+            # التجاوز الفوري لأي مفتاح يرجع 401
+            if res_raw.status_code == 401:
+                print(f"⚠️ مفتاح غير صالح ({api_key[:6]}...) [401]، تم استبعاده.", flush=True)
+                if api_key in active_keys:
+                    active_keys.remove(api_key)
+                continue
+
             if res_raw.status_code != 200:
-                print(f"⚠️ سيرفر API أرجع رمز حالة {res_raw.status_code} للرمز {symbol}", flush=True)
                 continue
 
             try:
                 res = res_raw.json()
             except Exception:
-                print(f"⚠️ رد غير صالح من السيرفر (ليس JSON) للرمز {symbol}، إعادة المحاولة...", flush=True)
                 continue
 
             if "values" in res:
@@ -100,7 +102,6 @@ def fetch_data(symbol, timeframe, outputsize=80, retries=3):
                     df[col] = df[col].astype(float)
                 return df
             elif "message" in res and ("run out" in res["message"] or "limit" in res["message"]):
-                print(f"⚠️ المفتاح {api_key[:6]}... انتهى حده، جاري استبعاده.", flush=True)
                 if api_key in active_keys:
                     active_keys.remove(api_key)
         except Exception as e:
@@ -290,9 +291,9 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري التشغيل بفرز أخطاء الشبكة التلقائي والمفاتيح الـ 15...", flush=True)
+    print("🚀 جاري التشغيل مع الفرز التلقائي للمفاتيح المرفوضة...", flush=True)
 
-    await send_telegram_msg("⚙️ **تم إعادة تشغيل البوت بنظام حماية الشبكة والمفاتيح الـ 15.**")
+    await send_telegram_msg("⚙️ **تم التشغيل. السكربت يستبعد أي مفتاح غير شغال تلقائياً ويستمر بالعمل.**")
 
     loop_count = 0
 
