@@ -8,19 +8,26 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-# تهيئة الاتصال بالتلجرام مع تمديد مهلة الانتظار
+# تهيئة الاتصال بالتلجرام مع تمديد مهلة الانتظار لمنع التوقف
 request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
 bot = Bot(token=BOT_TOKEN, request=request)
 
-# مفاتيحك الـ 15
+# قائمة المفاتيح الـ 15 الخاصة بك بالكامل
 API_KEYS = [
-    "C8229f7582f645b5a6cb09e6e4490002", "ba9b9b464937486f953d12278ffc0c54",
-    "3aa16ae3bc7d44f28cbf629508c020bf", "69b9cd8250344066a54be4108225f849",
-    "76a7b6f10798424385db93fe18a56e76", "59d7ff4537d846298cc50992950f0082",
-    "ff6c85b0a3f14866938d4c43865ce1df", "10cbf9b6f30043eb96e3ad2a89063f5f",
-    "d3bf745e06f74947a25b2175df9fe178", "406452df893f4375a2a79d156f5f66d6",
-    "ccfdfdefbd434defaaec9d853680065d", "d29ef2928aae41f2b96fcb7ba8b27f3b",
-    "ee4ead027117474e8d53a120c8aeb5e5", "1edb7d5da95b446dba1a97faf74803eb",
+    "C8229f7582f645b5a6cb09e6e4490002",
+    "ba9b9b464937486f953d12278ffc0c54",
+    "3aa16ae3bc7d44f28cbf629508c020bf",
+    "69b9cd8250344066a54be4108225f849",
+    "76a7b6f10798424385db93fe18a56e76",
+    "59d7ff4537d846298cc50992950f0082",
+    "ff6c85b0a3f14866938d4c43865ce1df",
+    "10cbf9b6f30043eb96e3ad2a89063f5f",
+    "d3bf745e06f74947a25b2175df9fe178",
+    "406452df893f4375a2a79d156f5f66d6",
+    "ccfdfdefbd434defaaec9d853680065d",
+    "d29ef2928aae41f2b96fcb7ba8b27f3b",
+    "ee4ead027117474e8d53a120c8aeb5e5",
+    "1edb7d5da95b446dba1a97faf74803eb",
     "56f1f5c2abea4989853d20a452f2dce9"
 ]
 
@@ -64,25 +71,40 @@ async def send_telegram_msg(text):
         print(f"Telegram Send Error: {e}", flush=True)
 
 def fetch_data(symbol, timeframe, outputsize=80, retries=3):
+    """جلب البيانات مع معالجة ذكية ومضمونة لأخطاء الاتصال والـ JSON"""
     global active_keys
     for attempt in range(retries):
         api_key = get_next_api_key()
         if not api_key:
+            print("❌ جميع مفاتيح الـ API مستهلكة حالياً!", flush=True)
             return None
 
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
         try:
-            res = requests.get(url, timeout=12).json()
+            res_raw = requests.get(url, timeout=12)
+            
+            # فحص إذا كان الرد فارغاً أو ليس JSON
+            if res_raw.status_code != 200:
+                print(f"⚠️ سيرفر API أرجع رمز حالة {res_raw.status_code} للرمز {symbol}", flush=True)
+                continue
+
+            try:
+                res = res_raw.json()
+            except Exception:
+                print(f"⚠️ رد غير صالح من السيرفر (ليس JSON) للرمز {symbol}، إعادة المحاولة...", flush=True)
+                continue
+
             if "values" in res:
                 df = pd.DataFrame(res["values"]).iloc[::-1].reset_index(drop=True)
                 for col in ["open", "high", "low", "close"]:
                     df[col] = df[col].astype(float)
                 return df
-            elif "message" in res and "run out" in res["message"]:
+            elif "message" in res and ("run out" in res["message"] or "limit" in res["message"]):
+                print(f"⚠️ المفتاح {api_key[:6]}... انتهى حده، جاري استبعاده.", flush=True)
                 if api_key in active_keys:
                     active_keys.remove(api_key)
         except Exception as e:
-            print(f"API Fetch Retry {attempt + 1}/{retries} ({symbol}): {e}", flush=True)
+            print(f"API Retry {attempt + 1}/{retries} ({symbol}): {e}", flush=True)
             
     return None
 
@@ -90,7 +112,6 @@ def calculate_ema(df, period=50):
     return df['close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
 def calculate_atr(df, period=14):
-    """حساب مدى التقلب ATR لتحديد ستوب لوز احترافي"""
     df = df.copy()
     df['h-l'] = df['high'] - df['low']
     df['h-pc'] = abs(df['high'] - df['close'].shift(1))
@@ -99,12 +120,9 @@ def calculate_atr(df, period=14):
     return df['tr'].rolling(period).mean().iloc[-1]
 
 def detect_fvg(df):
-    """كشف الفجوة السعرية (Fair Value Gap)"""
     if len(df) < 3: return None
-    # Bullish FVG
     if df['low'].iloc[-1] > df['high'].iloc[-3]:
         return "BULLISH_FVG"
-    # Bearish FVG
     if df['high'].iloc[-1] < df['low'].iloc[-3]:
         return "BEARISH_FVG"
     return None
@@ -135,30 +153,26 @@ def detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply):
     last_low = df_m5['low'].iloc[-1]
     last_high = df_m5['high'].iloc[-1]
 
-    # كسر هيكل متقدم CHoCH الشراء
     prev_high_m5 = df_m5['high'].iloc[-5:-1].max()
     is_bullish_choch = current_price > prev_high_m5
 
-    # كسر هيكل متقدم CHoCH البيع
     prev_low_m5 = df_m5['low'].iloc[-5:-1].min()
     is_bearish_choch = current_price < prev_low_m5
 
-    # 🟢 إشارة شراء عالية الدقة (SMC)
     if poi_demand and (last_low <= poi_demand["high"]) and (current_price > ema50_h1):
         if is_bullish_choch or fvg_type == "BULLISH_FVG":
-            sl = current_price - (atr_m5 * 1.8)  # ستوب دايناميكي مبني على ATR
+            sl = current_price - (atr_m5 * 1.8)
             risk = current_price - sl
             if risk <= 0: return None, None
-            tp = current_price + (risk * 2.0)    # الهدف ضعفي الستوب (1:2)
+            tp = current_price + (risk * 2.0)
             return "BUY", {"sl": sl, "tp": tp, "reason": "SMC Demand + CHoCH/FVG"}
 
-    # 🔴 إشارة بيع عالية الدقة (SMC)
     if poi_supply and (last_high >= poi_supply["low"]) and (current_price < ema50_h1):
         if is_bearish_choch or fvg_type == "BEARISH_FVG":
-            sl = current_price + (atr_m5 * 1.8)  # ستوب دايناميكي مبني على ATR
+            sl = current_price + (atr_m5 * 1.8)
             risk = sl - current_price
             if risk <= 0: return None, None
-            tp = current_price - (risk * 2.0)    # الهدف ضعفي الستوب (1:2)
+            tp = current_price - (risk * 2.0)
             return "SELL", {"sl": sl, "tp": tp, "reason": "SMC Supply + CHoCH/FVG"}
 
     return None, None
@@ -276,9 +290,9 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري تشغيل النسخة المتقدمة بمفاهيم SMC والـ ATR...", flush=True)
+    print("🚀 جاري التشغيل بفرز أخطاء الشبكة التلقائي والمفاتيح الـ 15...", flush=True)
 
-    await send_telegram_msg("⚡ **تم تحديث البوت لنظام SMC + FVG + ATR بنجاح! الإشارات الآن أشد دقة.**")
+    await send_telegram_msg("⚙️ **تم إعادة تشغيل البوت بنظام حماية الشبكة والمفاتيح الـ 15.**")
 
     loop_count = 0
 
