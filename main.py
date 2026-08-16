@@ -8,13 +8,13 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v2.6 (25 API Keys + Ultra-Fast Delivery)"
+VERSION = "v3.6 (Pro SMC Structure)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
 
-# قائمة الـ 24 مفتاح API النشطة
 API_KEYS = [
+    "C8229f7582f645b5a6cb09e6e4490002",
     "ba9b9b464937486f953d12278ffc0c54",
     "3aa16ae3bc7d44f28cbf629508c020bf",
     "69b9cd8250344066a54be4108225f849",
@@ -120,15 +120,26 @@ def fetch_data(symbol, timeframe, outputsize=50, retries=3):
             
     return None
 
+def get_market_bias(symbol):
+    df_h1 = fetch_data(symbol, "1h", 20)
+    if df_h1 is None or len(df_h1) < 15:
+        return "NEUTRAL"
+    
+    ema_h1 = df_h1['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+    price_h1 = df_h1['close'].iloc[-1]
+    
+    if price_h1 > ema_h1:
+        return "BULLISH"
+    elif price_h1 < ema_h1:
+        return "BEARISH"
+    return "NEUTRAL"
+
 def calculate_rsi(df, period=14):
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
     rs = gain / loss
     return (100 - (100 / (1 + rs))).iloc[-1]
-
-def calculate_ema(df, period=50):
-    return df['close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
 def calculate_atr(df, period=14):
     df = df.copy()
@@ -146,15 +157,13 @@ def detect_fvg(df):
         return "BEARISH_FVG"
     return None
 
-def detect_original_strategy_signal(df_m5):
+def detect_smc_signal(df_m5, bias):
     if df_m5 is None or len(df_m5) < 15:
         return None, None
 
     rsi = calculate_rsi(df_m5)
-    ema = calculate_ema(df_m5, 50)
     atr = calculate_atr(df_m5)
     fvg_type = detect_fvg(df_m5)
-    
     current_price = df_m5['close'].iloc[-1]
 
     prev_high_m5 = df_m5['high'].iloc[-5:-1].max()
@@ -163,19 +172,20 @@ def detect_original_strategy_signal(df_m5):
     prev_low_m5 = df_m5['low'].iloc[-5:-1].min()
     is_bearish_choch = current_price < prev_low_m5
 
-    if (current_price > ema) and (rsi < 65) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
-        sl = current_price - (atr * 1.5)
+    # فلاتر SMC مع توافق اتجاه H1 Bias
+    if bias == "BULLISH" and (rsi < 65) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
+        sl = current_price - (atr * 2.2)
         risk = current_price - sl
         if risk <= 0: return None, None
         tp = current_price + (risk * 2.0)
-        return "BUY", {"sl": sl, "tp": tp, "reason": "EMA Trend + CHoCH/FVG Confirmation"}
+        return "BUY", {"sl": sl, "tp": tp, "reason": "BULLISH Structure (H1 Bias) + BOS/FVG"}
 
-    if (current_price < ema) and (rsi > 35) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
-        sl = current_price + (atr * 1.5)
+    if bias == "BEARISH" and (rsi > 35) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
+        sl = current_price + (atr * 2.2)
         risk = sl - current_price
         if risk <= 0: return None, None
         tp = current_price - (risk * 2.0)
-        return "SELL", {"sl": sl, "tp": tp, "reason": "EMA Trend + CHoCH/FVG Confirmation"}
+        return "SELL", {"sl": sl, "tp": tp, "reason": "BEARISH Structure (H1 Bias) + BOS/FVG"}
 
     return None, None
 
@@ -202,6 +212,7 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
+    # إدارة الصفقة المفتوحة
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -238,11 +249,13 @@ def process_symbol(symbol):
 
         return None, None
 
+    # مهلة انتضار 15 دقيقة بعد الإغلاق
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
-    if cooldown < 5.0:
+    if cooldown < 15.0:
         return None, None
 
-    trade_type, trade_data = detect_original_strategy_signal(df_m5)
+    bias = get_market_bias(symbol)
+    trade_type, trade_data = detect_smc_signal(df_m5, bias)
 
     if not trade_type:
         return None, None
@@ -274,7 +287,7 @@ def process_symbol(symbol):
 📍 **سعر الدخول:** `{entry:.2f}`
 
 🎯 **الهدف (TP 1:2):** `{tp:.2f}`
-🛡️ **الستوب (ATR SL):** `{sl:.2f}`
+🛡️ **الستوب (ATR SL 2.2):** `{sl:.2f}`
 
 🔥 **السبب الفني:** `{reason}`
 
@@ -283,9 +296,9 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print(f"🚀 تم تشغيل البوت بنظام السرعة القصوى و 25 مفتاح API {VERSION}", flush=True)
+    print(f"🚀 تم تشغيل البوت بالنسخة الاحترافية {VERSION}", flush=True)
 
-    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة `{VERSION}` بنجاح.**\n\n- تم إضافة 10 مفاتيح API جديدة (الإجمالي: 25 مفتاح).\n- فحص أسرع للسوق للتغلب على فرق السعر."
+    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة `{VERSION}` بنجاح.**\n\n- ربط الاتجاه بفريم الساعة H1 Bias لتفادي الدخول المعاكس.\n- ستوب لوز موسع 2.2 ATR لتقليل الضغط.\n- نظام الحظر ومهلة 15 دقيقة بعد إغلاق الصفقة."
     await send_telegram_msg(update_msg)
 
     while True:
