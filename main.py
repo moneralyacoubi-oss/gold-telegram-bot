@@ -8,14 +8,13 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-# إصدار النسخة
-VERSION = "v2.5 (Old Strategy + Market Closure Handling)"
+VERSION = "v2.6 (25 API Keys + Ultra-Fast Delivery)"
 
-request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
+request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
 
+# قائمة الـ 24 مفتاح API النشطة
 API_KEYS = [
-    "7d34370b5fbf4160a6b04f07ede97648",
     "ba9b9b464937486f953d12278ffc0c54",
     "3aa16ae3bc7d44f28cbf629508c020bf",
     "69b9cd8250344066a54be4108225f849",
@@ -29,7 +28,17 @@ API_KEYS = [
     "d29ef2928aae41f2b96fcb7ba8b27f3b",
     "ee4ead027117474e8d53a120c8aeb5e5",
     "1edb7d5da95b446dba1a97faf74803eb",
-    "56f1f5c2abea4989853d20a452f2dce9"
+    "56f1f5c2abea4989853d20a452f2dce9",
+    "Cf02fa8d0b10466496bfae35bc8e61fc",
+    "cf6fff5cc5b9481e9b66b0b4557be3e0",
+    "5ab47caa0b614f56ba9815778f0024cb",
+    "c365534f82cf41a7a7e72df8fa9c7637",
+    "7b13e064b5f6406e9a98e78777c5ea91",
+    "541bef3becfb4d45a7ead575f147d407",
+    "cc82a74ca22c4b8d8f95f9ab7132b8b9",
+    "6b3970b4f67d4b68a6e26d2b5357373b",
+    "18d552240c38461da8eb89be259b2250",
+    "7d34370b5fbf4160a6b04f07ede97648"
 ]
 
 active_keys = list(API_KEYS)
@@ -49,9 +58,7 @@ def get_now():
     return datetime.now(IRAQ_TZ)
 
 def is_market_open():
-    """فحص حالة أوقات عمل السوق (مغلق بالسبت والأحد للعملات والذهب)"""
     now = get_now()
-    # 5 = السبت، 6 = الأحد
     if now.weekday() in [5, 6]:
         return False
     return True
@@ -71,22 +78,21 @@ async def send_telegram_msg(text):
             chat_id=CHAT_ID,
             text=text,
             parse_mode="Markdown",
-            disable_web_page_preview=False
+            disable_web_page_preview=True
         )
     except Exception as e:
         print(f"Telegram Send Error: {e}", flush=True)
 
-def fetch_data(symbol, timeframe, outputsize=80, retries=5):
+def fetch_data(symbol, timeframe, outputsize=50, retries=3):
     global active_keys
     for attempt in range(retries):
         api_key = get_next_api_key()
         if not api_key:
-            print("❌ جميع المفاتيح استُهلكت أو غير صالحة!", flush=True)
             return None
 
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
         try:
-            res_raw = requests.get(url, timeout=12)
+            res_raw = requests.get(url, timeout=6)
             
             if res_raw.status_code == 401:
                 if api_key in active_keys:
@@ -141,7 +147,6 @@ def detect_fvg(df):
     return None
 
 def detect_original_strategy_signal(df_m5):
-    """الاستراتيجية السابقة الأصلية (RSI + EMA + FVG/CHoCH)"""
     if df_m5 is None or len(df_m5) < 15:
         return None, None
 
@@ -158,7 +163,6 @@ def detect_original_strategy_signal(df_m5):
     prev_low_m5 = df_m5['low'].iloc[-5:-1].min()
     is_bearish_choch = current_price < prev_low_m5
 
-    # شروط الشراء السابقة (المرنة)
     if (current_price > ema) and (rsi < 65) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
         sl = current_price - (atr * 1.5)
         risk = current_price - sl
@@ -166,7 +170,6 @@ def detect_original_strategy_signal(df_m5):
         tp = current_price + (risk * 2.0)
         return "BUY", {"sl": sl, "tp": tp, "reason": "EMA Trend + CHoCH/FVG Confirmation"}
 
-    # شروط البيع السابقة (المرنة)
     if (current_price < ema) and (rsi > 35) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
         sl = current_price + (atr * 1.5)
         risk = sl - current_price
@@ -187,7 +190,6 @@ def process_symbol(symbol):
 
     now = get_now()
 
-    # إذا كان الرمز غير الكريبتو والسوق مغلق، نتخطى الفحص
     if "BTC" not in symbol and not is_market_open():
         return None, None
 
@@ -281,29 +283,23 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print(f"🚀 تم تشغيل البوت بالنسخة {VERSION}", flush=True)
+    print(f"🚀 تم تشغيل البوت بنظام السرعة القصوى و 25 مفتاح API {VERSION}", flush=True)
 
-    # إرسال رسالة التحديث مرة واحدة فقط بالتلجرام عند بدء التفعيل
-    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة `{VERSION}` بنجاح.**\n\n- تم الرجوع للاستراتيجية السابقة المربحة.\n- تم إيقاف الرسائل الدورية والاعتماد على الـ Log.\n- تم تفعيل نظام معالجة أوقات عطلة السوق."
+    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة `{VERSION}` بنجاح.**\n\n- تم إضافة 10 مفاتيح API جديدة (الإجمالي: 25 مفتاح).\n- فحص أسرع للسوق للتغلب على فرق السعر."
     await send_telegram_msg(update_msg)
 
     while True:
         try:
-            if not is_market_open():
-                print(f"😴 السوق مغلق حالياً (عطلة نهاية الأسبوع) - فحص BTC فقط | المفاتيح النشطة: {len(active_keys)}", flush=True)
-            else:
-                print(f"🔄 جولة فحص جارية | المفاتيح النشطة: {len(active_keys)}", flush=True)
-
             for symbol in SYMBOLS:
                 status, msg = process_symbol(symbol)
                 if msg:
                     await send_telegram_msg(msg)
-                await asyncio.sleep(1.2)
+                await asyncio.sleep(0.5)
 
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
