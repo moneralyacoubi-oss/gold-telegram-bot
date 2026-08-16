@@ -8,11 +8,14 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
+# إصدار النسخة
+VERSION = "v2.5 (Old Strategy + Market Closure Handling)"
+
 request = HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)
 bot = Bot(token=BOT_TOKEN, request=request)
 
 API_KEYS = [
-    "C8229f7582f645b5a6cb09e6e4490002",
+    "7d34370b5fbf4160a6b04f07ede97648",
     "ba9b9b464937486f953d12278ffc0c54",
     "3aa16ae3bc7d44f28cbf629508c020bf",
     "69b9cd8250344066a54be4108225f849",
@@ -45,6 +48,14 @@ IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 def get_now():
     return datetime.now(IRAQ_TZ)
 
+def is_market_open():
+    """فحص حالة أوقات عمل السوق (مغلق بالسبت والأحد للعملات والذهب)"""
+    now = get_now()
+    # 5 = السبت، 6 = الأحد
+    if now.weekday() in [5, 6]:
+        return False
+    return True
+
 SYMBOLS = [
     "XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", 
     "GBP/JPY", "EUR/JPY", "AUD/USD", "USD/JPY"
@@ -53,9 +64,6 @@ SYMBOLS = [
 last_signals = {s: None for s in SYMBOLS}
 active_trades = {s: None for s in SYMBOLS}
 last_trade_closed_times = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
-
-poi_cache = {}
-last_h1_fetch = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
 async def send_telegram_msg(text):
     try:
@@ -69,7 +77,6 @@ async def send_telegram_msg(text):
         print(f"Telegram Send Error: {e}", flush=True)
 
 def fetch_data(symbol, timeframe, outputsize=80, retries=5):
-    """جلب البيانات مع فلترة المفاتيح المرفوضة 401 تلقائياً"""
     global active_keys
     for attempt in range(retries):
         api_key = get_next_api_key()
@@ -81,9 +88,7 @@ def fetch_data(symbol, timeframe, outputsize=80, retries=5):
         try:
             res_raw = requests.get(url, timeout=12)
             
-            # التجاوز الفوري لأي مفتاح يرجع 401
             if res_raw.status_code == 401:
-                print(f"⚠️ مفتاح غير صالح ({api_key[:6]}...) [401]، تم استبعاده.", flush=True)
                 if api_key in active_keys:
                     active_keys.remove(api_key)
                 continue
@@ -109,6 +114,13 @@ def fetch_data(symbol, timeframe, outputsize=80, retries=5):
             
     return None
 
+def calculate_rsi(df, period=14):
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return (100 - (100 / (1 + rs))).iloc[-1]
+
 def calculate_ema(df, period=50):
     return df['close'].ewm(span=period, adjust=False).mean().iloc[-1]
 
@@ -128,31 +140,17 @@ def detect_fvg(df):
         return "BEARISH_FVG"
     return None
 
-def find_poi_zones(df_h1):
-    if df_h1 is None or len(df_h1) < 20:
-        return None, None
-    
-    lows = df_h1['low'].tail(20)
-    highs = df_h1['high'].tail(20)
-    
-    range_span = highs.max() - lows.min()
-    
-    poi_demand = {"low": lows.min(), "high": lows.min() + (range_span * 0.15)}
-    poi_supply = {"high": highs.max(), "low": highs.max() - (range_span * 0.15)}
-    
-    return poi_demand, poi_supply
-
-def detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply):
-    if df_m5 is None or len(df_m5) < 10 or df_h1 is None:
+def detect_original_strategy_signal(df_m5):
+    """الاستراتيجية السابقة الأصلية (RSI + EMA + FVG/CHoCH)"""
+    if df_m5 is None or len(df_m5) < 15:
         return None, None
 
-    ema50_h1 = calculate_ema(df_h1, 50)
-    atr_m5 = calculate_atr(df_m5)
+    rsi = calculate_rsi(df_m5)
+    ema = calculate_ema(df_m5, 50)
+    atr = calculate_atr(df_m5)
     fvg_type = detect_fvg(df_m5)
     
     current_price = df_m5['close'].iloc[-1]
-    last_low = df_m5['low'].iloc[-1]
-    last_high = df_m5['high'].iloc[-1]
 
     prev_high_m5 = df_m5['high'].iloc[-5:-1].max()
     is_bullish_choch = current_price > prev_high_m5
@@ -160,21 +158,21 @@ def detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply):
     prev_low_m5 = df_m5['low'].iloc[-5:-1].min()
     is_bearish_choch = current_price < prev_low_m5
 
-    if poi_demand and (last_low <= poi_demand["high"]) and (current_price > ema50_h1):
-        if is_bullish_choch or fvg_type == "BULLISH_FVG":
-            sl = current_price - (atr_m5 * 1.8)
-            risk = current_price - sl
-            if risk <= 0: return None, None
-            tp = current_price + (risk * 2.0)
-            return "BUY", {"sl": sl, "tp": tp, "reason": "SMC Demand + CHoCH/FVG"}
+    # شروط الشراء السابقة (المرنة)
+    if (current_price > ema) and (rsi < 65) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
+        sl = current_price - (atr * 1.5)
+        risk = current_price - sl
+        if risk <= 0: return None, None
+        tp = current_price + (risk * 2.0)
+        return "BUY", {"sl": sl, "tp": tp, "reason": "EMA Trend + CHoCH/FVG Confirmation"}
 
-    if poi_supply and (last_high >= poi_supply["low"]) and (current_price < ema50_h1):
-        if is_bearish_choch or fvg_type == "BEARISH_FVG":
-            sl = current_price + (atr_m5 * 1.8)
-            risk = sl - current_price
-            if risk <= 0: return None, None
-            tp = current_price - (risk * 2.0)
-            return "SELL", {"sl": sl, "tp": tp, "reason": "SMC Supply + CHoCH/FVG"}
+    # شروط البيع السابقة (المرنة)
+    if (current_price < ema) and (rsi > 35) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
+        sl = current_price + (atr * 1.5)
+        risk = sl - current_price
+        if risk <= 0: return None, None
+        tp = current_price - (risk * 2.0)
+        return "SELL", {"sl": sl, "tp": tp, "reason": "EMA Trend + CHoCH/FVG Confirmation"}
 
     return None, None
 
@@ -185,21 +183,13 @@ def get_pip_multiplier(symbol):
     else: return 10000.0
 
 def process_symbol(symbol):
-    global last_signals, active_trades, last_trade_closed_times, poi_cache, last_h1_fetch
+    global last_signals, active_trades, last_trade_closed_times
 
     now = get_now()
 
-    if symbol not in poi_cache or (now - last_h1_fetch[symbol]).total_seconds() > 1800:
-        df_h1 = fetch_data(symbol, "1h", 60)
-        if df_h1 is not None:
-            poi_demand, poi_supply = find_poi_zones(df_h1)
-            poi_cache[symbol] = (poi_demand, poi_supply, df_h1)
-            last_h1_fetch[symbol] = now
-
-    if symbol not in poi_cache:
+    # إذا كان الرمز غير الكريبتو والسوق مغلق، نتخطى الفحص
+    if "BTC" not in symbol and not is_market_open():
         return None, None
-
-    poi_demand, poi_supply, df_h1 = poi_cache[symbol]
 
     df_m5 = fetch_data(symbol, "5min", 30)
     if df_m5 is None:
@@ -250,7 +240,7 @@ def process_symbol(symbol):
     if cooldown < 5.0:
         return None, None
 
-    trade_type, trade_data = detect_high_precision_signal(df_m5, df_h1, poi_demand, poi_supply)
+    trade_type, trade_data = detect_original_strategy_signal(df_m5)
 
     if not trade_type:
         return None, None
@@ -273,7 +263,7 @@ def process_symbol(symbol):
         "entry_time": now
     }
 
-    emoji = "🟢 BUY (إشارة SMC فائقة الدقة)" if trade_type == "BUY" else "🔴 SELL (إشارة SMC فائقة الدقة)"
+    emoji = "🟢 BUY" if trade_type == "BUY" else "🔴 SELL"
     tv_symbol = f"FX:{symbol.replace('/', '')}" if "BTC" not in symbol and "XAU" not in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "BINANCE:BTCUSDT")
 
     message = f"""{emoji}
@@ -291,24 +281,24 @@ def process_symbol(symbol):
     return "NEW_TRADE", message
 
 async def main():
-    print("🚀 جاري التشغيل مع الفرز التلقائي للمفاتيح المرفوضة...", flush=True)
+    print(f"🚀 تم تشغيل البوت بالنسخة {VERSION}", flush=True)
 
-    await send_telegram_msg("⚙️ **تم التشغيل. السكربت يستبعد أي مفتاح غير شغال تلقائياً ويستمر بالعمل.**")
-
-    loop_count = 0
+    # إرسال رسالة التحديث مرة واحدة فقط بالتلجرام عند بدء التفعيل
+    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة `{VERSION}` بنجاح.**\n\n- تم الرجوع للاستراتيجية السابقة المربحة.\n- تم إيقاف الرسائل الدورية والاعتماد على الـ Log.\n- تم تفعيل نظام معالجة أوقات عطلة السوق."
+    await send_telegram_msg(update_msg)
 
     while True:
         try:
+            if not is_market_open():
+                print(f"😴 السوق مغلق حالياً (عطلة نهاية الأسبوع) - فحص BTC فقط | المفاتيح النشطة: {len(active_keys)}", flush=True)
+            else:
+                print(f"🔄 جولة فحص جارية | المفاتيح النشطة: {len(active_keys)}", flush=True)
+
             for symbol in SYMBOLS:
                 status, msg = process_symbol(symbol)
                 if msg:
                     await send_telegram_msg(msg)
                 await asyncio.sleep(1.2)
-
-            loop_count += 1
-            if loop_count >= 30:
-                await send_telegram_msg("📡 **السكربت المحسّن يراقب الأزواج بنجاح.**")
-                loop_count = 0
 
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
