@@ -92,7 +92,8 @@ def fetch_data(symbol, timeframe, outputsize=50, retries=3):
 
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
         try:
-            res_raw = requests.get(url, timeout=6)
+            # تم زيادة الـ timeout إلى 15 ثانية لمنع انتهاء الوقت
+            res_raw = requests.get(url, timeout=15)
             
             if res_raw.status_code == 401:
                 if api_key in active_keys:
@@ -172,7 +173,6 @@ def detect_smc_signal(df_m5, bias):
     prev_low_m5 = df_m5['low'].iloc[-5:-1].min()
     is_bearish_choch = current_price < prev_low_m5
 
-    # فلاتر SMC مع توافق اتجاه H1 Bias
     if bias == "BULLISH" and (rsi < 65) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
         sl = current_price - (atr * 2.2)
         risk = current_price - sl
@@ -212,7 +212,6 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # إدارة الصفقة المفتوحة
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -249,7 +248,6 @@ def process_symbol(symbol):
 
         return None, None
 
-    # مهلة انتظار 15 دقيقة بعد الإغلاق
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 15.0:
         return None, None
@@ -307,7 +305,8 @@ async def main():
                 status, msg = process_symbol(symbol)
                 if msg:
                     await send_telegram_msg(msg)
-                await asyncio.sleep(0.5)
+                # مهلة بين طلب كل زوج لمنع حظر الطلبات وتخفيف الضغط
+                await asyncio.sleep(1.5)
 
         except Exception as e:
             print(f"Loop Error: {e}", flush=True)
