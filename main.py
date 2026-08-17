@@ -225,7 +225,7 @@ def process_symbol(symbol):
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
                 unit = "USD" if "BTC" in symbol else "Pip"
-                return "UPDATE", f"❌ **إغلاق ضرب الستوب (SL)**\n📉 {symbol} | `{pips}` {unit}"
+                return "UPDATE", f"❌ **إغلاق: ضرب الستوب (SL)**\n📉 {symbol} | `{pips}` {unit}"
             elif price >= tp:
                 pips = round((tp - entry) * pip_mult, 1)
                 active_trades[symbol] = None
@@ -239,7 +239,7 @@ def process_symbol(symbol):
                 active_trades[symbol] = None
                 last_trade_closed_times[symbol] = now
                 unit = "USD" if "BTC" in symbol else "Pip"
-                return "UPDATE", f"❌ **إغلاق ضرب الستوب (SL)**\n📉 {symbol} | `{pips}` {unit}"
+                return "UPDATE", f"❌ **إغلاق: ضرب الستوب (SL)**\n📉 {symbol} | `{pips}` {unit}"
             elif price <= tp:
                 pips = round((entry - tp) * pip_mult, 1)
                 active_trades[symbol] = None
@@ -249,7 +249,7 @@ def process_symbol(symbol):
 
         return None, None
 
-    # مهلة انتضار 15 دقيقة بعد الإغلاق
+    # مهلة انتظار 15 دقيقة بعد الإغلاق
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 15.0:
         return None, None
