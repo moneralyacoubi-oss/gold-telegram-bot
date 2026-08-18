@@ -8,7 +8,7 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v3.6 (Pro SMC Structure)"
+VERSION = "v4.0 (Pro SMC M15 + Session Filter)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
@@ -63,6 +63,12 @@ def is_market_open():
         return False
     return True
 
+def is_active_session():
+    """التأكد من التداول خلال جلسة لندن ونيويورك فقط (10:00 ص إلى 09:00 م)"""
+    now = get_now()
+    hour = now.hour
+    return 10 <= hour < 21
+
 SYMBOLS = [
     "XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", 
     "GBP/JPY", "EUR/JPY", "AUD/USD", "USD/JPY"
@@ -92,7 +98,6 @@ def fetch_data(symbol, timeframe, outputsize=50, retries=3):
 
         url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
         try:
-            # تم زيادة الـ timeout إلى 15 ثانية لمنع انتهاء الوقت
             res_raw = requests.get(url, timeout=15)
             
             if res_raw.status_code == 401:
@@ -158,34 +163,34 @@ def detect_fvg(df):
         return "BEARISH_FVG"
     return None
 
-def detect_smc_signal(df_m5, bias):
-    if df_m5 is None or len(df_m5) < 15:
+def detect_smc_signal(df_m15, bias):
+    if df_m15 is None or len(df_m15) < 15:
         return None, None
 
-    rsi = calculate_rsi(df_m5)
-    atr = calculate_atr(df_m5)
-    fvg_type = detect_fvg(df_m5)
-    current_price = df_m5['close'].iloc[-1]
+    rsi = calculate_rsi(df_m15)
+    atr = calculate_atr(df_m15)
+    fvg_type = detect_fvg(df_m15)
+    current_price = df_m15['close'].iloc[-1]
 
-    prev_high_m5 = df_m5['high'].iloc[-5:-1].max()
-    is_bullish_choch = current_price > prev_high_m5
+    prev_high = df_m15['high'].iloc[-5:-1].max()
+    is_bullish_choch = current_price > prev_high
 
-    prev_low_m5 = df_m5['low'].iloc[-5:-1].min()
-    is_bearish_choch = current_price < prev_low_m5
+    prev_low = df_m15['low'].iloc[-5:-1].min()
+    is_bearish_choch = current_price < prev_low
 
-    if bias == "BULLISH" and (rsi < 65) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
-        sl = current_price - (atr * 2.2)
+    if bias == "BULLISH" and (rsi < 60) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
+        sl = current_price - (atr * 2.0)
         risk = current_price - sl
         if risk <= 0: return None, None
         tp = current_price + (risk * 2.0)
-        return "BUY", {"sl": sl, "tp": tp, "reason": "BULLISH Structure (H1 Bias) + BOS/FVG"}
+        return "BUY", {"sl": sl, "tp": tp, "reason": "M15 SMC Structure + H1 Bias Alignment"}
 
-    if bias == "BEARISH" and (rsi > 35) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
-        sl = current_price + (atr * 2.2)
+    if bias == "BEARISH" and (rsi > 40) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
+        sl = current_price + (atr * 2.0)
         risk = sl - current_price
         if risk <= 0: return None, None
         tp = current_price - (risk * 2.0)
-        return "SELL", {"sl": sl, "tp": tp, "reason": "BEARISH Structure (H1 Bias) + BOS/FVG"}
+        return "SELL", {"sl": sl, "tp": tp, "reason": "M15 SMC Structure + H1 Bias Alignment"}
 
     return None, None
 
@@ -203,15 +208,17 @@ def process_symbol(symbol):
     if "BTC" not in symbol and not is_market_open():
         return None, None
 
-    df_m5 = fetch_data(symbol, "5min", 30)
-    if df_m5 is None:
+    # استخدام فريم M15 لتقليل الضوضاء والصفقات الكاذبة
+    df_m15 = fetch_data(symbol, "15min", 30)
+    if df_m15 is None:
         return None, None
 
-    price = float(df_m5["close"].iloc[-1])
+    price = float(df_m15["close"].iloc[-1])
     pip_mult = get_pip_multiplier(symbol)
 
     active_trade = active_trades[symbol]
 
+    # متابعة وإغلاق الصفقات الحالية
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -248,70 +255,14 @@ def process_symbol(symbol):
 
         return None, None
 
+    # شرط فلتر جلسات التداول (لندن + نيويورك) للعملات والذهب
+    if "BTC" not in symbol and not is_active_session():
+        return None, None
+
+    # مهلة انتظر 15 دقيقة بعد إغلاق الصفقة
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 15.0:
         return None, None
 
     bias = get_market_bias(symbol)
-    trade_type, trade_data = detect_smc_signal(df_m5, bias)
-
-    if not trade_type:
-        return None, None
-
-    sl = trade_data["sl"]
-    tp = trade_data["tp"]
-    reason = trade_data["reason"]
-
-    current_signal = f"{trade_type}_{round(price, 2)}"
-    if current_signal == last_signals[symbol]:
-        return None, None
-
-    last_signals[symbol] = current_signal
-    entry = price
-    active_trades[symbol] = {
-        "type": trade_type,
-        "entry": entry,
-        "tp": tp,
-        "sl": sl,
-        "entry_time": now
-    }
-
-    emoji = "🟢 BUY" if trade_type == "BUY" else "🔴 SELL"
-    tv_symbol = f"FX:{symbol.replace('/', '')}" if "BTC" not in symbol and "XAU" not in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "BINANCE:BTCUSDT")
-
-    message = f"""{emoji}
-
-📌 **الرمز:** `{symbol}`
-📍 **سعر الدخول:** `{entry:.2f}`
-
-🎯 **الهدف (TP 1:2):** `{tp:.2f}`
-🛡️ **الستوب (ATR SL 2.2):** `{sl:.2f}`
-
-🔥 **السبب الفني:** `{reason}`
-
-📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
-"""
-    return "NEW_TRADE", message
-
-async def main():
-    print(f"🚀 تم تشغيل البوت بالنسخة الاحترافية {VERSION}", flush=True)
-
-    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة `{VERSION}` بنجاح.**\n\n- ربط الاتجاه بفريم الساعة H1 Bias لتفادي الدخول المعاكس.\n- ستوب لوز موسع 2.2 ATR لتقليل الضغط.\n- نظام الحظر ومهلة 15 دقيقة بعد إغلاق الصفقة."
-    await send_telegram_msg(update_msg)
-
-    while True:
-        try:
-            for symbol in SYMBOLS:
-                status, msg = process_symbol(symbol)
-                if msg:
-                    await send_telegram_msg(msg)
-                # مهلة بين طلب كل زوج لمنع حظر الطلبات وتخفيف الضغط
-                await asyncio.sleep(1.5)
-
-        except Exception as e:
-            print(f"Loop Error: {e}", flush=True)
-
-        await asyncio.sleep(10)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    trade_type, trade_data = detect_smc_signal(
