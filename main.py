@@ -64,7 +64,6 @@ def is_market_open():
     return True
 
 def is_active_session():
-    """التأكد من التداول خلال جلسة لندن ونيويورك فقط (10:00 ص إلى 09:00 م)"""
     now = get_now()
     hour = now.hour
     return 10 <= hour < 21
@@ -156,7 +155,8 @@ def calculate_atr(df, period=14):
     return df['tr'].rolling(period).mean().iloc[-1]
 
 def detect_fvg(df):
-    if len(df) < 3: return None
+    if len(df) < 3:
+        return None
     if df['low'].iloc[-1] > df['high'].iloc[-3]:
         return "BULLISH_FVG"
     if df['high'].iloc[-1] < df['low'].iloc[-3]:
@@ -181,24 +181,30 @@ def detect_smc_signal(df_m15, bias):
     if bias == "BULLISH" and (rsi < 60) and (is_bullish_choch or fvg_type == "BULLISH_FVG"):
         sl = current_price - (atr * 2.0)
         risk = current_price - sl
-        if risk <= 0: return None, None
+        if risk <= 0:
+            return None, None
         tp = current_price + (risk * 2.0)
         return "BUY", {"sl": sl, "tp": tp, "reason": "M15 SMC Structure + H1 Bias Alignment"}
 
     if bias == "BEARISH" and (rsi > 40) and (is_bearish_choch or fvg_type == "BEARISH_FVG"):
         sl = current_price + (atr * 2.0)
         risk = sl - current_price
-        if risk <= 0: return None, None
+        if risk <= 0:
+            return None, None
         tp = current_price - (risk * 2.0)
         return "SELL", {"sl": sl, "tp": tp, "reason": "M15 SMC Structure + H1 Bias Alignment"}
 
     return None, None
 
 def get_pip_multiplier(symbol):
-    if "BTC" in symbol: return 1.0
-    elif "XAU" in symbol: return 10.0
-    elif "JPY" in symbol: return 100.0
-    else: return 10000.0
+    if "BTC" in symbol:
+        return 1.0
+    elif "XAU" in symbol:
+        return 10.0
+    elif "JPY" in symbol:
+        return 100.0
+    else:
+        return 10000.0
 
 def process_symbol(symbol):
     global last_signals, active_trades, last_trade_closed_times
@@ -208,7 +214,6 @@ def process_symbol(symbol):
     if "BTC" not in symbol and not is_market_open():
         return None, None
 
-    # استخدام فريم M15 لتقليل الضوضاء والصفقات الكاذبة
     df_m15 = fetch_data(symbol, "15min", 30)
     if df_m15 is None:
         return None, None
@@ -218,7 +223,6 @@ def process_symbol(symbol):
 
     active_trade = active_trades[symbol]
 
-    # متابعة وإغلاق الصفقات الحالية
     if active_trade:
         trade_type = active_trade["type"]
         entry = active_trade["entry"]
@@ -255,14 +259,72 @@ def process_symbol(symbol):
 
         return None, None
 
-    # شرط فلتر جلسات التداول (لندن + نيويورك) للعملات والذهب
     if "BTC" not in symbol and not is_active_session():
         return None, None
 
-    # مهلة انتظر 15 دقيقة بعد إغلاق الصفقة
     cooldown = (now - last_trade_closed_times[symbol]).total_seconds() / 60.0
     if cooldown < 15.0:
         return None, None
 
     bias = get_market_bias(symbol)
-    trade_type, trade_data = detect_smc_signal(
+    trade_type, trade_data = detect_smc_signal(df_m15, bias)
+
+    if not trade_type:
+        return None, None
+
+    sl = trade_data["sl"]
+    tp = trade_data["tp"]
+    reason = trade_data["reason"]
+
+    current_signal = f"{trade_type}_{round(price, 2)}"
+    if current_signal == last_signals[symbol]:
+        return None, None
+
+    last_signals[symbol] = current_signal
+    entry = price
+    active_trades[symbol] = {
+        "type": trade_type,
+        "entry": entry,
+        "tp": tp,
+        "sl": sl,
+        "entry_time": now
+    }
+
+    emoji = "🟢 BUY" if trade_type == "BUY" else "🔴 SELL"
+    tv_symbol = f"FX:{symbol.replace('/', '')}" if "BTC" not in symbol and "XAU" not in symbol else ("OANDA:XAUUSD" if "XAU" in symbol else "BINANCE:BTCUSDT")
+
+    message = f"""{emoji}
+
+📌 **الرمز:** `{symbol}`
+📍 **سعر الدخول:** `{entry:.2f}`
+
+🎯 **الهدف (TP 1:2):** `{tp:.2f}`
+🛡️ **الستوب (SL):** `{sl:.2f}`
+
+🔥 **السبب الفني:** `{reason}`
+
+📈 [فتح الشارت على TradingView](https://www.tradingview.com/chart/?symbol={tv_symbol})
+"""
+    return "NEW_TRADE", message
+
+async def main():
+    print(f"🚀 تم تشغيل البوت المطور {VERSION}", flush=True)
+
+    update_msg = f"⚙️ **تم تحديث البوت إلى النسخة الاحترافية `{VERSION}`**\n\n- التحويل إلى فريم M15 لتقليل الاختراقات الكاذبة.\n- تفعيل فلتر جلسات التداول (لندن ونيويورك فقط).\n- رفع جودة الدخول وتفادي أوقات التذبذب الضيف."
+    await send_telegram_msg(update_msg)
+
+    while True:
+        try:
+            for symbol in SYMBOLS:
+                status, msg = process_symbol(symbol)
+                if msg:
+                    await send_telegram_msg(msg)
+                await asyncio.sleep(1.5)
+
+        except Exception as e:
+            print(f"Loop Error: {e}", flush=True)
+
+        await asyncio.sleep(10)
+
+if __name__ == "__main__":
+    asyncio.run(main())
