@@ -8,7 +8,7 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v5.1 (No-Repeat Institutional SMC)"
+VERSION = "v5.2 (Trade Lifecycle Protection)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
@@ -34,8 +34,7 @@ current_key_index = 0
 
 def get_next_api_key():
     global current_key_index, active_keys
-    if not active_keys:
-        return None
+    if not active_keys: return None
     key = active_keys[current_key_index % len(active_keys)].strip()
     current_key_index = (current_key_index + 1) % len(active_keys)
     return key
@@ -53,7 +52,8 @@ def is_active_session():
 
 SYMBOLS = ["XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", "GBP/JPY", "USD/JPY"]
 
-last_signals = {s: None for s in SYMBOLS}
+# قاموس لحفظ الصفقة المفتوحة لكل زوج
+active_trades = {s: None for s in SYMBOLS}
 
 async def send_telegram_msg(text):
     try:
@@ -62,7 +62,6 @@ async def send_telegram_msg(text):
         print(f"Telegram Error: {e}", flush=True)
 
 def fetch_data(symbol, timeframe, outputsize=50):
-    global active_keys
     api_key = get_next_api_key()
     if not api_key: return None
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
@@ -121,45 +120,69 @@ def detect_institutional_signal(df_m15, bias):
 
     return None, None
 
-def process_symbol(symbol):
-    global last_signals
+async def process_symbol(symbol):
+    global active_trades
 
     if "BTC" not in symbol and (not is_market_open() or not is_active_session()):
-        return None, None
+        return
 
     df_m15 = fetch_data(symbol, "15min", 30)
-    if df_m15 is None: return None, None
+    if df_m15 is None: return
 
-    price = float(df_m15["close"].iloc[-1])
+    current_price = float(df_m15["close"].iloc[-1])
+    high_price = float(df_m15["high"].iloc[-1])
+    low_price = float(df_m15["low"].iloc[-1])
+
+    # 1. إذا كانت هناك صفقة مفتوحة للزوج: نتحقق هل ضربت الهدف أو الستوب
+    if active_trades[symbol] is not None:
+        trade = active_trades[symbol]
+        
+        if trade["type"] == "BUY":
+            if high_price >= trade["tp"]:
+                await send_telegram_msg(f"🎯 **تم تحقيق الهدف (TP)!**\n📌 **الرمز:** `{symbol}`\n💰 **ربح الصفقة:** `{trade['tp']:.2f}`")
+                active_trades[symbol] = None  # إغلاق الصفقة
+            elif low_price <= trade["sl"]:
+                await send_telegram_msg(f"🛡️ **تم ضرب الستوب (SL)!**\n📌 **الرمز:** `{symbol}`\n🔻 **إغلاق على خسارة:** `{trade['sl']:.2f}`")
+                active_trades[symbol] = None  # إغلاق الصفقة
+                
+        elif trade["type"] == "SELL":
+            if low_price <= trade["tp"]:
+                await send_telegram_msg(f"🎯 **تم تحقيق الهدف (TP)!**\n📌 **الرمز:** `{symbol}`\n💰 **ربح الصفقة:** `{trade['tp']:.2f}`")
+                active_trades[symbol] = None  # إغلاق الصفقة
+            elif high_price >= trade["sl"]:
+                await send_telegram_msg(f"🛡️ **تم ضرب الستوب (SL)!**\n📌 **الرمز:** `{symbol}`\n🔻 **إغلاق على خسارة:** `{trade['sl']:.2f}`")
+                active_trades[symbol] = None  # إغلاق الصفقة
+
+        # طالما توجد صفقة مفتوحة ولم تُغلق بعد، اخرج ولا ترسل إشارة جديدة
+        return
+
+    # 2. إذا لم تكن هناك صفقة مفتوحة: ابحث عن إشارة جديدة
     bias = get_market_bias(symbol)
     trade_type, trade_data = detect_institutional_signal(df_m15, bias)
 
-    if not trade_type: 
-        last_signals[symbol] = None
-        return None, None
+    if trade_type:
+        sl, tp, reason = trade_data["sl"], trade_data["tp"], trade_data["reason"]
+        
+        # تسجيل الصفقة الجديدة كصفقة قائمة
+        active_trades[symbol] = {
+            "type": trade_type,
+            "entry": current_price,
+            "sl": sl,
+            "tp": tp
+        }
 
-    # منع تكرار نفس الإشارة لنفس الزوج متتالياً
-    signal_key = f"{trade_type}_{round(price, 1)}"
-    if last_signals[symbol] == signal_key:
-        return None, None
-
-    sl, tp, reason = trade_data["sl"], trade_data["tp"], trade_data["reason"]
-    last_signals[symbol] = signal_key
-
-    emoji = "🟢 BUY" if trade_type == "BUY" else "🔴 SELL"
-    msg = f"{emoji} **إشارة جديدة**"
-    msg += f"\n\n📌 **الرمز:** `{symbol}`\n📍 **الدخول:** `{price:.2f}`\n🎯 **الهدف:** `{tp:.2f}`\n🛡️ **الستوب:** `{sl:.2f}`\n🔥 **السبب:** `{reason}`"
-    return trade_type, msg
+        emoji = "🟢 BUY" if trade_type == "BUY" else "🔴 SELL"
+        msg = f"{emoji} **إشارة جديدة**"
+        msg += f"\n\n📌 **الرمز:** `{symbol}`\n📍 **الدخول:** `{current_price:.2f}`\n🎯 **الهدف:** `{tp:.2f}`\n🛡️ **الستوب:** `{sl:.2f}`\n🔥 **السبب:** `{reason}`"
+        await send_telegram_msg(msg)
 
 async def main():
     print(f"🚀 تم تشغيل الاستراتيجية {VERSION}", flush=True)
-    await send_telegram_msg(f"⚙️ **تم تحديث البوت إلى `{VERSION}` (منع تكرار الإشارات)**")
+    await send_telegram_msg(f"⚙️ **تم تحديث البوت إلى `{VERSION}` (متابعة الصفقات حتى الإغلاق)**")
     while True:
         try:
             for symbol in SYMBOLS:
-                status, msg = process_symbol(symbol)
-                if msg: 
-                    await send_telegram_msg(msg)
+                await process_symbol(symbol)
                 await asyncio.sleep(2)
         except Exception as e:
             print(f"Error: {e}", flush=True)
