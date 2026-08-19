@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
 import pytz
@@ -8,7 +8,7 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v5.7 (Ultra Tight SL - Medium TP)"
+VERSION = "v5.8 (Ultra Tight SL + News Shield)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
@@ -53,6 +53,15 @@ def is_active_session():
 SYMBOLS = ["XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", "GBP/JPY", "USD/JPY"]
 
 active_trades = {s: None for s in SYMBOLS}
+
+# 🚨 فحص الأخبار عالية التأثير (تأمين الصفقات)
+def is_news_time():
+    # يمكن ربط هذه الدالة بـ API أخبار أو تجنب أوقات صدور الأخبار الأمريكية الرئيسية (مثلاً بين 3:30 م إلى 5:00 م بتوقيت العراق)
+    now = get_now()
+    # فترة صدور البيانات الاقتصادية الأمريكية اليومية الشائعة (15:20 - 15:45)
+    if now.hour == 15 and 20 <= now.minute <= 45:
+        return True
+    return False
 
 def format_price(symbol, price):
     if price is None: return "0.00"
@@ -117,13 +126,11 @@ def detect_institutional_signal(symbol, df_m15, bias):
     fvg_bull = df_m15['low'].iloc[-1] > df_m15['high'].iloc[-3]
     
     if bias == "BULLISH" and (sweep_bull or fvg_bull):
-        # 🌟 الستوب مباشرة عند أدنى سعر للشمعة السابقة (قريب جداً)
         sl = df_m15['low'].iloc[-2]
         risk = current_price - sl
         
         if risk <= 0: return None, None
         
-        # 🌟 أهداف متوسطة ومتقاربة (1:1.2, 1:2.0, 1:2.8)
         tp1 = current_price + (risk * 1.2)
         tp2 = current_price + (risk * 2.0)
         tp3 = current_price + (risk * 2.8)
@@ -133,13 +140,11 @@ def detect_institutional_signal(symbol, df_m15, bias):
     fvg_bear = df_m15['high'].iloc[-1] < df_m15['low'].iloc[-3]
 
     if bias == "BEARISH" and (sweep_bear or fvg_bear):
-        # 🌟 الستوب مباشرة عند أعلى سعر للشمعة السابقة (قريب جداً)
         sl = df_m15['high'].iloc[-2]
         risk = sl - current_price
         
         if risk <= 0: return None, None
         
-        # 🌟 أهداف متوسطة ومتقاربة (1:1.2, 1:2.0, 1:2.8)
         tp1 = current_price - (risk * 1.2)
         tp2 = current_price - (risk * 2.0)
         tp3 = current_price - (risk * 2.8)
@@ -149,6 +154,13 @@ def detect_institutional_signal(symbol, df_m15, bias):
 
 async def process_symbol(symbol):
     global active_trades
+
+    # إلغاء تحليل أو فتح صفقات عند فترة الأخبار العنيفة
+    if is_news_time():
+        if active_trades[symbol] is not None:
+            await send_telegram_msg(f"⚠️ **تنبيه أخبار عالية التأثير!**\n📌 تم تحييد/إغلاق متابعة صفقة `{symbol}` لتجنب الذبذبة.")
+            active_trades[symbol] = None
+        return
 
     if "BTC" not in symbol and (not is_market_open() or not is_active_session()):
         return
@@ -208,7 +220,7 @@ async def process_symbol(symbol):
 
 async def main():
     print(f"🚀 تم تشغيل الاستراتيجية {VERSION}", flush=True)
-    await send_telegram_msg(f"⚙️ **تم التحديث إلى `{VERSION}` (ستوب محكم وأهداف متوسطة)**")
+    await send_telegram_msg(f"⚙️ **تم التحديث إلى `{VERSION}` (إضافة فلتر الأخبار + ستوبات محكمة)**")
     while True:
         try:
             for symbol in SYMBOLS:
