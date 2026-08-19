@@ -8,7 +8,7 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v5.0 (Institutional SMC & Liquidity Sweep)"
+VERSION = "v5.1 (No-Repeat Institutional SMC)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
@@ -18,7 +18,15 @@ API_KEYS = [
     "3aa16ae3bc7d44f28cbf629508c020bf", "69b9cd8250344066a54be4108225f849",
     "76a7b6f10798424385db93fe18a56e76", "59d7ff4537d846298cc50992950f0082",
     "ff6c85b0a3f14866938d4c43865ce1df", "10cbf9b6f30043eb96e3ad2a89063f5f",
-    "d3bf745e06f74947a25b2175df9fe178", "406452df893f4375a2a79d156f5f66d6"
+    "d3bf745e06f74947a25b2175df9fe178", "406452df893f4375a2a79d156f5f66d6",
+    "ccfdfdefbd434defaaec9d853680065d", "d29ef2928aae41f2b96fcb7ba8b27f3b",
+    "ee4ead027117474e8d53a120c8aeb5e5", "1edb7d5da95b446dba1a97faf74803eb",
+    "56f1f5c2abea4989853d20a452f2dce9", "Cf02fa8d0b10466496bfae35bc8e61fc",
+    "cf6fff5cc5b9481e9b66b0b4557be3e0", "5ab47caa0b614f56ba9815778f0024cb",
+    "c365534f82cf41a7a7e72df8fa9c7637", "7b13e064b5f6406e9a98e78777c5ea91",
+    "541bef3becfb4d45a7ead575f147d407", "cc82a74ca22c4b8d8f95f9ab7132b8b9",
+    "6b3970b4f67d4b68a6e26d2b5357373b", "18d552240c38461da8eb89be259b2250",
+    "7d34370b5fbf4160a6b04f07ede97648"
 ]
 
 active_keys = list(API_KEYS)
@@ -46,8 +54,6 @@ def is_active_session():
 SYMBOLS = ["XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", "GBP/JPY", "USD/JPY"]
 
 last_signals = {s: None for s in SYMBOLS}
-active_trades = {s: None for s in SYMBOLS}
-last_trade_closed_times = {s: datetime.min.replace(tzinfo=IRAQ_TZ) for s in SYMBOLS}
 
 async def send_telegram_msg(text):
     try:
@@ -93,7 +99,6 @@ def detect_institutional_signal(df_m15, bias):
     recent_low = df_m15['low'].iloc[-15:-3].min()
     recent_high = df_m15['high'].iloc[-15:-3].max()
     
-    # شرط الشراء: سحب سيولة للقاع السابق واختراق تعافٍ مع الاتجاه
     sweep_bull = df_m15['low'].iloc[-2] < recent_low and df_m15['close'].iloc[-2] > recent_low
     fvg_bull = df_m15['low'].iloc[-1] > df_m15['high'].iloc[-3]
     
@@ -104,7 +109,6 @@ def detect_institutional_signal(df_m15, bias):
         tp = current_price + (risk * 2.0)
         return "BUY", {"sl": sl, "tp": tp, "reason": "Liquidity Sweep + FVG Mitigation"}
 
-    # شرط البيع: سحب سيولة للقمة السابقة واختراق تعافٍ مع الاتجاه
     sweep_bear = df_m15['high'].iloc[-2] > recent_high and df_m15['close'].iloc[-2] < recent_high
     fvg_bear = df_m15['high'].iloc[-1] < df_m15['low'].iloc[-3]
 
@@ -118,7 +122,8 @@ def detect_institutional_signal(df_m15, bias):
     return None, None
 
 def process_symbol(symbol):
-    now = get_now()
+    global last_signals
+
     if "BTC" not in symbol and (not is_market_open() or not is_active_session()):
         return None, None
 
@@ -129,21 +134,32 @@ def process_symbol(symbol):
     bias = get_market_bias(symbol)
     trade_type, trade_data = detect_institutional_signal(df_m15, bias)
 
-    if not trade_type: return None, None
+    if not trade_type: 
+        last_signals[symbol] = None
+        return None, None
+
+    # منع تكرار نفس الإشارة لنفس الزوج متتالياً
+    signal_key = f"{trade_type}_{round(price, 1)}"
+    if last_signals[symbol] == signal_key:
+        return None, None
 
     sl, tp, reason = trade_data["sl"], trade_data["tp"], trade_data["reason"]
-    
-    msg = f"🟢 **إشارة شراء جديدة**" if trade_type == "BUY" else f"🔴 **إشارة بيع جديدة**"
+    last_signals[symbol] = signal_key
+
+    emoji = "🟢 BUY" if trade_type == "BUY" else "🔴 SELL"
+    msg = f"{emoji} **إشارة جديدة**"
     msg += f"\n\n📌 **الرمز:** `{symbol}`\n📍 **الدخول:** `{price:.2f}`\n🎯 **الهدف:** `{tp:.2f}`\n🛡️ **الستوب:** `{sl:.2f}`\n🔥 **السبب:** `{reason}`"
     return trade_type, msg
 
 async def main():
-    await send_telegram_msg(f"🚀 **تم تشغيل الاستراتيجية المؤسسية `{VERSION}`**")
+    print(f"🚀 تم تشغيل الاستراتيجية {VERSION}", flush=True)
+    await send_telegram_msg(f"⚙️ **تم تحديث البوت إلى `{VERSION}` (منع تكرار الإشارات)**")
     while True:
         try:
             for symbol in SYMBOLS:
                 status, msg = process_symbol(symbol)
-                if msg: await send_telegram_msg(msg)
+                if msg: 
+                    await send_telegram_msg(msg)
                 await asyncio.sleep(2)
         except Exception as e:
             print(f"Error: {e}", flush=True)
