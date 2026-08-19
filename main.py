@@ -8,7 +8,7 @@ from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v5.5 (Clean Signals - Triple TP Precision)"
+VERSION = "v5.7 (Ultra Tight SL - Medium TP)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
@@ -104,45 +104,45 @@ def get_market_bias(symbol):
     price = df_h1['close'].iloc[-1]
     return "BULLISH" if price > ema else "BEARISH"
 
-def calculate_atr(df, period=14):
-    df['h-l'] = df['high'] - df['low']
-    df['h-pc'] = abs(df['high'] - df['close'].shift(1))
-    df['l-pc'] = abs(df['low'] - df['close'].shift(1))
-    return df[['h-l', 'h-pc', 'l-pc']].max(axis=1).rolling(period).mean().iloc[-1]
-
 def detect_institutional_signal(symbol, df_m15, bias):
     if df_m15 is None or len(df_m15) < 20 or bias == "NEUTRAL": 
         return None, None
     
     current_price = df_m15['close'].iloc[-1]
-    atr = calculate_atr(df_m15)
-    multiplier = 1.5 if "XAU" in symbol else 0.5
 
-    recent_low = df_m15['low'].iloc[-15:-3].min()
-    recent_high = df_m15['high'].iloc[-15:-3].max()
+    recent_low = df_m15['low'].iloc[-8:-2].min()
+    recent_high = df_m15['high'].iloc[-8:-2].max()
     
     sweep_bull = df_m15['low'].iloc[-2] < recent_low and df_m15['close'].iloc[-2] > recent_low
     fvg_bull = df_m15['low'].iloc[-1] > df_m15['high'].iloc[-3]
     
     if bias == "BULLISH" and (sweep_bull or fvg_bull):
-        sl = min(df_m15['low'].iloc[-3:]) - (atr * multiplier)
+        # 🌟 الستوب مباشرة عند أدنى سعر للشمعة السابقة (قريب جداً)
+        sl = df_m15['low'].iloc[-2]
         risk = current_price - sl
+        
         if risk <= 0: return None, None
-        tp1 = current_price + (risk * 1.0)
+        
+        # 🌟 أهداف متوسطة ومتقاربة (1:1.2, 1:2.0, 1:2.8)
+        tp1 = current_price + (risk * 1.2)
         tp2 = current_price + (risk * 2.0)
-        tp3 = current_price + (risk * 3.0)
+        tp3 = current_price + (risk * 2.8)
         return "BUY", {"sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}
 
     sweep_bear = df_m15['high'].iloc[-2] > recent_high and df_m15['close'].iloc[-2] < recent_high
     fvg_bear = df_m15['high'].iloc[-1] < df_m15['low'].iloc[-3]
 
     if bias == "BEARISH" and (sweep_bear or fvg_bear):
-        sl = max(df_m15['high'].iloc[-3:]) + (atr * multiplier)
+        # 🌟 الستوب مباشرة عند أعلى سعر للشمعة السابقة (قريب جداً)
+        sl = df_m15['high'].iloc[-2]
         risk = sl - current_price
+        
         if risk <= 0: return None, None
-        tp1 = current_price - (risk * 1.0)
+        
+        # 🌟 أهداف متوسطة ومتقاربة (1:1.2, 1:2.0, 1:2.8)
+        tp1 = current_price - (risk * 1.2)
         tp2 = current_price - (risk * 2.0)
-        tp3 = current_price - (risk * 3.0)
+        tp3 = current_price - (risk * 2.8)
         return "SELL", {"sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3}
 
     return None, None
@@ -208,7 +208,7 @@ async def process_symbol(symbol):
 
 async def main():
     print(f"🚀 تم تشغيل الاستراتيجية {VERSION}", flush=True)
-    await send_telegram_msg(f"⚙️ **تم التحديث إلى `{VERSION}` (إشارة سريعة بـ 3 أهداف)**")
+    await send_telegram_msg(f"⚙️ **تم التحديث إلى `{VERSION}` (ستوب محكم وأهداف متوسطة)**")
     while True:
         try:
             for symbol in SYMBOLS:
