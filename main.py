@@ -1,43 +1,17 @@
 import asyncio
-from datetime import datetime, timedelta
-import requests
+from datetime import datetime
 import pandas as pd
 import pytz
+import MetaTrader5 as mt5
 from telegram import Bot
 from telegram.request import HTTPXRequest
 
 from config import BOT_TOKEN, CHAT_ID
 
-VERSION = "v5.8 (Ultra Tight SL + News Shield)"
+VERSION = "v6.0 (Direct MT5 Feed - Perfect Price Precision)"
 
 request = HTTPXRequest(connect_timeout=20.0, read_timeout=20.0)
 bot = Bot(token=BOT_TOKEN, request=request)
-
-API_KEYS = [
-    "C8229f7582f645b5a6cb09e6e4490002", "ba9b9b464937486f953d12278ffc0c54",
-    "3aa16ae3bc7d44f28cbf629508c020bf", "69b9cd8250344066a54be4108225f849",
-    "76a7b6f10798424385db93fe18a56e76", "59d7ff4537d846298cc50992950f0082",
-    "ff6c85b0a3f14866938d4c43865ce1df", "10cbf9b6f30043eb96e3ad2a89063f5f",
-    "d3bf745e06f74947a25b2175df9fe178", "406452df893f4375a2a79d156f5f66d6",
-    "ccfdfdefbd434defaaec9d853680065d", "d29ef2928aae41f2b96fcb7ba8b27f3b",
-    "ee4ead027117474e8d53a120c8aeb5e5", "1edb7d5da95b446dba1a97faf74803eb",
-    "56f1f5c2abea4989853d20a452f2dce9", "Cf02fa8d0b10466496bfae35bc8e61fc",
-    "cf6fff5cc5b9481e9b66b0b4557be3e0", "5ab47caa0b614f56ba9815778f0024cb",
-    "c365534f82cf41a7a7e72df8fa9c7637", "7b13e064b5f6406e9a98e78777c5ea91",
-    "541bef3becfb4d45a7ead575f147d407", "cc82a74ca22c4b8d8f95f9ab7132b8b9",
-    "6b3970b4f67d4b68a6e26d2b5357373b", "18d552240c38461da8eb89be259b2250",
-    "7d34370b5fbf4160a6b04f07ede97648"
-]
-
-active_keys = list(API_KEYS)
-current_key_index = 0
-
-def get_next_api_key():
-    global current_key_index, active_keys
-    if not active_keys: return None
-    key = active_keys[current_key_index % len(active_keys)].strip()
-    current_key_index = (current_key_index + 1) % len(active_keys)
-    return key
 
 IRAQ_TZ = pytz.timezone("Asia/Baghdad")
 
@@ -50,18 +24,10 @@ def is_market_open():
 def is_active_session():
     return 10 <= get_now().hour < 21
 
-SYMBOLS = ["XAU/USD", "BTC/USD", "EUR/USD", "GBP/USD", "GBP/JPY", "USD/JPY"]
+# الرموز كما هي مكتوبة في منصة MT5 الخاصة بك
+SYMBOLS = ["XAUUSD", "BTCUSD", "EURUSD", "GBPUSD", "GBPJPY", "USDJPY"]
 
 active_trades = {s: None for s in SYMBOLS}
-
-# 🚨 فحص الأخبار عالية التأثير (تأمين الصفقات)
-def is_news_time():
-    # يمكن ربط هذه الدالة بـ API أخبار أو تجنب أوقات صدور الأخبار الأمريكية الرئيسية (مثلاً بين 3:30 م إلى 5:00 م بتوقيت العراق)
-    now = get_now()
-    # فترة صدور البيانات الاقتصادية الأمريكية اليومية الشائعة (15:20 - 15:45)
-    if now.hour == 15 and 20 <= now.minute <= 45:
-        return True
-    return False
 
 def format_price(symbol, price):
     if price is None: return "0.00"
@@ -78,23 +44,16 @@ async def send_telegram_msg(text):
     except Exception as e:
         print(f"Telegram Error: {e}", flush=True)
 
-def fetch_data(symbol, timeframe, outputsize=50):
-    api_key = get_next_api_key()
-    if not api_key: return None
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={timeframe}&outputsize={outputsize}&apikey={api_key}"
-    try:
-        res = requests.get(url, timeout=15).json()
-        if "values" in res:
-            df = pd.DataFrame(res["values"]).iloc[::-1].reset_index(drop=True)
-            for col in ["open", "high", "low", "close"]:
-                df[col] = df[col].astype(float)
-            return df
-    except Exception:
-        pass
-    return None
+def fetch_data_from_mt5(symbol, timeframe_mt5, count=50):
+    rates = mt5.copy_rates_from_pos(symbol, timeframe_mt5, 0, count)
+    if rates is None or len(rates) == 0:
+        return None
+    df = pd.DataFrame(rates)
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    return df
 
 def get_market_bias(symbol):
-    df_h1 = fetch_data(symbol, "1h", 40)
+    df_h1 = fetch_data_from_mt5(symbol, mt5.TIMEFRAME_H1, 40)
     if df_h1 is None or len(df_h1) < 30: return "NEUTRAL"
     
     if "XAU" in symbol:
@@ -128,7 +87,6 @@ def detect_institutional_signal(symbol, df_m15, bias):
     if bias == "BULLISH" and (sweep_bull or fvg_bull):
         sl = df_m15['low'].iloc[-2]
         risk = current_price - sl
-        
         if risk <= 0: return None, None
         
         tp1 = current_price + (risk * 1.2)
@@ -142,7 +100,6 @@ def detect_institutional_signal(symbol, df_m15, bias):
     if bias == "BEARISH" and (sweep_bear or fvg_bear):
         sl = df_m15['high'].iloc[-2]
         risk = sl - current_price
-        
         if risk <= 0: return None, None
         
         tp1 = current_price - (risk * 1.2)
@@ -155,17 +112,10 @@ def detect_institutional_signal(symbol, df_m15, bias):
 async def process_symbol(symbol):
     global active_trades
 
-    # إلغاء تحليل أو فتح صفقات عند فترة الأخبار العنيفة
-    if is_news_time():
-        if active_trades[symbol] is not None:
-            await send_telegram_msg(f"⚠️ **تنبيه أخبار عالية التأثير!**\n📌 تم تحييد/إغلاق متابعة صفقة `{symbol}` لتجنب الذبذبة.")
-            active_trades[symbol] = None
-        return
-
     if "BTC" not in symbol and (not is_market_open() or not is_active_session()):
         return
 
-    df_m15 = fetch_data(symbol, "15min", 30)
+    df_m15 = fetch_data_from_mt5(symbol, mt5.TIMEFRAME_M15, 30)
     if df_m15 is None: return
 
     current_price = float(df_m15["close"].iloc[-1])
@@ -219,16 +169,21 @@ async def process_symbol(symbol):
         await send_telegram_msg(msg)
 
 async def main():
+    if not mt5.initialize():
+        print("❌ فشل الاتصال بـ MetaTrader 5! تأكد من فتح البرنامج على الحاسبة.")
+        return
+    
     print(f"🚀 تم تشغيل الاستراتيجية {VERSION}", flush=True)
-    await send_telegram_msg(f"⚙️ **تم التحديث إلى `{VERSION}` (إضافة فلتر الأخبار + ستوبات محكمة)**")
+    await send_telegram_msg(f"⚙️ **تم التحديث إلى `{VERSION}` (ربط مباشر مع MT5)**")
+    
     while True:
         try:
             for symbol in SYMBOLS:
                 await process_symbol(symbol)
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
         except Exception as e:
             print(f"Error: {e}", flush=True)
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
 
 if __name__ == "__main__":
     asyncio.run(main())
